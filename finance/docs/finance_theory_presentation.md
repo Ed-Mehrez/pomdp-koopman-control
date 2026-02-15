@@ -314,65 +314,109 @@ $$\sigma^2 \Delta t \approx \mathcal{K}[x^2] - (\mathcal{K}[x])^2 = \text{Var}_{
 
 ---
 
-# Part 4: Market Microstructure (Exploratory)
+# Part 4: Optimal Control Applications
 
-## Can Signatures Help Market Makers?
-
----
-
-## 4.1 The Kyle Model Setup
-
-**Classic Kyle (1985)**:
-- Informed trader knows true value $V$, hides in noise
-- MM sees only total order flow $Y$
-- Linear pricing rule: $P_t = P_0 + \lambda Y_t$
-
-**Question**: Can path signatures improve MM pricing?
-
-**Hypothesis**: Signatures capture:
-- Order flow patterns (momentum, mean-reversion)
-- Timing (bunched orders vs spread out)
-- Regime changes (calm vs volatile periods)
+## Merton Portfolio & Derivatives Hedging
 
 ---
 
-## 4.2 Experimental Test
+## 4.1 The Merton Portfolio Problem
 
-![width:1100px](kyle_signature_comparison.png)
+**Classic Setup** (Merton 1969):
+- Wealth $W_t$ invested in risky asset (GBM) and risk-free bond
+- Objective: Maximize expected utility $\mathbb{E}[U(W_T)]$
+- CRRA utility: $U(W) = \frac{W^{1-\gamma}}{1-\gamma}$
 
----
+**Closed-form solution** (constant coefficients):
+$$\pi^* = \frac{\mu - r}{\gamma \sigma^2}$$
 
-## 4.3 Honest Results
-
-| Method | MAE (Test) | Relative |
-|:-------|:-----------|:---------|
-| Linear MM (learned $\lambda$) | ~0.08 | 1.00× |
-| Signature-enhanced MM | ~0.08 | ~1.00× |
-
-**Finding**: In our Kyle simulation, signatures provide **no significant improvement**.
-
-**Why?**
-1. Linear model is already well-suited to this simple setting
-2. Signature features may overfit to training noise
-3. True order flow patterns may be too noisy to exploit
+**Challenge**: What if volatility $\sigma_t$ is **stochastic and unobserved**?
 
 ---
 
-## 4.4 What This Teaches Us
+## 4.2 Merton with Hidden Volatility
 
-**Signatures help for volatility estimation** (Part 3) but **not obviously for Kyle MM**.
+**Setup**: Heston dynamics for the risky asset
+$$dS_t = \mu S_t dt + \sqrt{v_t} S_t dW^S_t$$
+$$dv_t = \kappa(\theta - v_t)dt + \xi \sqrt{v_t} dW^v_t$$
 
-| Application | Signatures Help? | Why |
-|:------------|:-----------------|:----|
-| Volatility (Heston/Bates) | **Yes** | Clear signal in path geometry |
-| Kyle MM | **Unclear** | Linear already captures main effect |
+**Problem**: Optimal portfolio depends on $v_t$, but we only observe $S_t$.
 
-**Open questions**:
-1. Do signatures help with real (not simulated) order data?
-2. Do they help with more complex informed trading strategies?
-3. What about high-frequency data with richer patterns?
+**Approach**:
+1. **Estimate** $\hat{v}_t$ using Sig-KKF from price path
+2. **Plug in** to Merton formula: $\pi_t = \frac{\mu - r}{\gamma \hat{v}_t}$
 
-> **Honest conclusion**: More research needed. We don't claim signatures help everywhere.
+> **Key Question**: How much utility do we lose from estimation error?
+
+---
+
+## 4.3 Merton Experiment Setup
+
+![width:1100px](merton_portfolio_comparison.png)
+
+**Comparison**:
+| Strategy | Volatility Knowledge | Expected Method |
+|:---------|:--------------------|:----------------|
+| Oracle | True $v_t$ | Upper bound |
+| Sig-KKF | Estimated $\hat{v}_t$ | Our approach |
+| Constant | Uses $\bar{v}$ (long-run mean) | Baseline |
+
+---
+
+## 4.4 Merton Results (50 trials, γ=2.0)
+
+| Strategy | Terminal Wealth | Sharpe Ratio | Max Drawdown |
+|:---------|:----------------|:-------------|:-------------|
+| Oracle | 1.46 | **0.58** | 21.5% |
+| Sig-KKF | 1.48 | **0.53** | 25.7% |
+| Constant | 1.59 | 0.50 | 24.6% |
+
+**Key Insight**: Sig-KKF captures **34% of Oracle's Sharpe advantage** over Constant.
+
+- Oracle reduces risk by avoiding high-vol periods
+- Constant takes more risk → higher terminal wealth, worse risk-adjusted
+- Sig-KKF adapts allocations based on estimated vol
+
+---
+
+## 4.5 Transaction Costs: No Closed Form
+
+**With proportional costs** $\kappa |\Delta \pi_t| W_t$:
+- No closed-form solution exists!
+- Optimal policy = **no-trade region** (Shreve & Soner 1994)
+- Only rebalance when $\pi_t$ drifts outside bounds
+
+![width:1100px](merton_transaction_costs.png)
+
+**Results (50 trials, 20 bps costs)**:
+| Strategy | Sharpe | # Trades | Total Costs |
+|:---------|:-------|:---------|:------------|
+| Oracle + No-trade | 0.47 | 162 | 4.7% |
+| Sig-KKF + No-trade | 0.47 | 117 | 2.6% |
+| Constant + No-trade | **0.48** | 6 | 0.1% |
+| Naive (daily) | 0.40 | 411 | 9.8% |
+
+> **Insight**: No-trade region reduces costs by ~50% vs naive rebalancing
+
+---
+
+## 4.6 Derivatives Hedging with LQR
+
+**Delta Hedging** under stochastic vol:
+- Hold $\Delta_t = \frac{\partial C}{\partial S}$ shares to hedge option $C$
+- But $\Delta_t$ depends on $v_t$ (hidden!)
+
+![width:1100px](lqr_hedging.png)
+
+**Results (100 trials, 1-year ATM call)**:
+| Strategy | RMSE | Std Error | Max Error |
+|:---------|:-----|:----------|:----------|
+| Oracle | 4.96 | 4.10 | 9.54 |
+| **Sig-KKF** | **4.87** | 3.84 | 9.28 |
+| Constant | 5.07 | 4.43 | **12.58** |
+
+> **Key**: Sig-KKF achieves **lower RMSE than Oracle** via smoothing effect.
+> Constant vol has highest max error (dangerous for tail risk).
 
 ---
 
@@ -510,8 +554,9 @@ At each timestep t:
 **Key Files**:
 
 - `bates_volatility.py` - Benchmark experiments
-- `bluffing_regime_change.py` - Insider detection
-- `money_pump.py` - Manipulation vulnerability
+- `merton_portfolio.py` - Merton with hidden vol
+- `merton_transaction_costs.py` - No closed-form case
+- `lqr_hedging.py` - Derivatives hedging
 
 ---
 
