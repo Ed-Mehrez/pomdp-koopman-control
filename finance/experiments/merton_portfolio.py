@@ -40,7 +40,7 @@ plt.style.use('seaborn-v0_8-whitegrid')
 # ============================================================================
 
 def simulate_heston(n_steps=1000, dt=1/252, S0=100, v0=0.04,
-                    mu=0.08, r=0.02, kappa=0.5, theta=0.04, xi=0.5, rho=-0.7,
+                    mu=0.08, r=0.02, kappa=0.3, theta=0.04, xi=0.6, rho=-0.7,
                     seed=42):
     """
     Simulate Heston stochastic volatility model.
@@ -247,29 +247,37 @@ def compute_metrics(W, gamma=2.0, rf_rate=0.02, dt=1/252):
 # 5. Main Experiment
 # ============================================================================
 
-def run_experiment(n_trials=50, n_steps=1000, gamma=2.0):
+def run_experiment(n_trials=50, n_steps=1000, gamma=2.0, theta=0.04):
     """
     Run multiple trials comparing strategies.
+
+    IMPORTANT: We now use theta (the MODEL parameter) for constant,
+    NOT np.mean(v_true) which would be cheating (look-ahead bias).
     """
-    results = {'oracle': [], 'sigkkf': [], 'constant': []}
+    results = {'oracle': [], 'sigkkf': [], 'constant': [], 'constant_cheat': []}
 
     for trial in range(n_trials):
         # Simulate market
         S, v_true, returns = simulate_heston(n_steps=n_steps, seed=trial*100)
 
         # Volatility estimates
-        v_constant = np.full(n_steps, np.mean(v_true))  # Long-run mean
+        # FAIR: Use model's long-run mean theta (what you'd estimate from history)
+        v_constant = np.full(n_steps, theta)
+        # CHEAT: Use in-sample mean (look-ahead bias - for comparison only)
+        v_constant_cheat = np.full(n_steps, np.mean(v_true))
         v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
 
         # Run portfolios
         W_oracle, _ = simulate_portfolio(S, v_true, gamma=gamma)
         W_sigkkf, _ = simulate_portfolio(S, v_sigkkf, gamma=gamma)
         W_constant, _ = simulate_portfolio(S, v_constant, gamma=gamma)
+        W_constant_cheat, _ = simulate_portfolio(S, v_constant_cheat, gamma=gamma)
 
         # Compute metrics
         results['oracle'].append(compute_metrics(W_oracle, gamma))
         results['sigkkf'].append(compute_metrics(W_sigkkf, gamma))
         results['constant'].append(compute_metrics(W_constant, gamma))
+        results['constant_cheat'].append(compute_metrics(W_constant_cheat, gamma))
 
     # Aggregate
     summary = {}
@@ -296,8 +304,11 @@ def create_merton_figure():
     np.random.seed(42)
     n_steps = 1000
 
+    theta = 0.04  # Model's long-run variance (what we'd know in practice)
+
     S, v_true, returns = simulate_heston(n_steps=n_steps)
-    v_constant = np.full(n_steps, np.mean(v_true))
+    # FAIR: Use theta (known model parameter), not in-sample mean
+    v_constant = np.full(n_steps, theta)
     v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
 
     t = np.arange(n_steps) / 252  # Years
@@ -372,11 +383,11 @@ def create_merton_figure():
     ax5 = fig.add_subplot(2, 3, 5)
 
     print("Running multi-trial experiment...")
-    summary, all_results = run_experiment(n_trials=50)
+    summary, all_results = run_experiment(n_trials=50, theta=theta)
 
     strategies = ['oracle', 'sigkkf', 'constant']
     colors = ['#2c3e50', '#27ae60', '#3498db']
-    labels = ['Oracle', 'Sig-KKF', 'Constant']
+    labels = ['Oracle', 'Sig-KKF', 'Constant (θ)']
 
     # Terminal wealth distribution
     for i, (strat, color, label) in enumerate(zip(strategies, colors, labels)):
@@ -395,21 +406,24 @@ def create_merton_figure():
     ax6 = fig.add_subplot(2, 3, 6)
     ax6.axis('off')
 
+    # Compute capture percentage safely
+    oracle_adv = summary['oracle']['sharpe'] - summary['constant']['sharpe']
+    sigkkf_adv = summary['sigkkf']['sharpe'] - summary['constant']['sharpe']
+    capture_pct = (sigkkf_adv / oracle_adv * 100) if abs(oracle_adv) > 0.01 else 0
+
     summary_text = f"""
     MERTON PORTFOLIO RESULTS (50 trials, γ=2.0):
 
-                      Oracle    Sig-KKF   Constant
-    Terminal Wealth:  {summary['oracle']['terminal_wealth']:.3f}     {summary['sigkkf']['terminal_wealth']:.3f}     {summary['constant']['terminal_wealth']:.3f}
-    Sharpe Ratio:     {summary['oracle']['sharpe']:.3f}     {summary['sigkkf']['sharpe']:.3f}     {summary['constant']['sharpe']:.3f}
-    Max Drawdown:     {summary['oracle']['max_drawdown']:.1%}    {summary['sigkkf']['max_drawdown']:.1%}    {summary['constant']['max_drawdown']:.1%}
+                      Oracle    Sig-KKF   Const(θ)  Const(cheat)
+    Terminal Wealth:  {summary['oracle']['terminal_wealth']:.3f}     {summary['sigkkf']['terminal_wealth']:.3f}     {summary['constant']['terminal_wealth']:.3f}      {summary['constant_cheat']['terminal_wealth']:.3f}
+    Sharpe Ratio:     {summary['oracle']['sharpe']:.3f}     {summary['sigkkf']['sharpe']:.3f}     {summary['constant']['sharpe']:.3f}      {summary['constant_cheat']['sharpe']:.3f}
+    Max Drawdown:     {summary['oracle']['max_drawdown']:.1%}    {summary['sigkkf']['max_drawdown']:.1%}    {summary['constant']['max_drawdown']:.1%}     {summary['constant_cheat']['max_drawdown']:.1%}
 
-    INTERPRETATION:
-    - Oracle: Upper bound (knows true vol)
-    - Sig-KKF: Adapts to estimated vol
-    - Constant: Ignores vol changes
+    NOTE:
+    - Const(θ) uses model's long-run mean (fair)
+    - Const(cheat) uses in-sample mean (look-ahead!)
 
-    Sig-KKF captures {(summary['sigkkf']['sharpe'] - summary['constant']['sharpe']) / (summary['oracle']['sharpe'] - summary['constant']['sharpe']) * 100:.0f}% of the
-    Oracle's advantage over Constant.
+    Sig-KKF captures {capture_pct:.0f}% of Oracle's advantage.
     """
 
     ax6.text(0.05, 0.5, summary_text, transform=ax6.transAxes,

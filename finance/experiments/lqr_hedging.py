@@ -272,7 +272,7 @@ def run_experiment(n_trials=100, n_steps=252):
         v_estimates = {
             'true': v_true,
             'sigkkf': estimate_volatility_sigkkf(returns, n_steps),
-            'constant': np.full(n_steps, np.mean(v_true)),
+            'constant': np.full(n_steps, 0.04),
         }
 
         for name, config in strategies.items():
@@ -300,7 +300,7 @@ def create_figure():
 
     S, v_true, returns = simulate_heston(n_steps=n_steps)
     v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
-    v_constant = np.full(n_steps, np.mean(v_true))
+    v_constant = np.full(n_steps, 0.04)
 
     t = np.arange(n_steps) / 252
 

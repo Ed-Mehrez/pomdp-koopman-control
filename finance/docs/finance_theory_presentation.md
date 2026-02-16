@@ -367,14 +367,14 @@ $$dv_t = \kappa(\theta - v_t)dt + \xi \sqrt{v_t} dW^v_t$$
 
 | Strategy | Terminal Wealth | Sharpe Ratio | Max Drawdown |
 |:---------|:----------------|:-------------|:-------------|
-| Oracle | 1.46 | **0.58** | 21.5% |
-| Sig-KKF | 1.48 | **0.53** | 25.7% |
-| Constant | 1.59 | 0.50 | 24.6% |
+| Oracle | 1.50 | **0.75** | 19.7% |
+| Sig-KKF | 1.52 | **0.69** | 23.4% |
+| Constant (θ) | 1.23 | 0.58 | 24.0% |
 
-**Key Insight**: Sig-KKF captures **34% of Oracle's Sharpe advantage** over Constant.
+**Key Insight**: Sig-KKF captures **63% of Oracle's Sharpe advantage** over Constant.
 
 - Oracle reduces risk by avoiding high-vol periods
-- Constant takes more risk → higher terminal wealth, worse risk-adjusted
+- Constant (using model's θ, not in-sample mean!) underperforms
 - Sig-KKF adapts allocations based on estimated vol
 
 ---
@@ -389,14 +389,15 @@ $$dv_t = \kappa(\theta - v_t)dt + \xi \sqrt{v_t} dW^v_t$$
 ![width:1100px](merton_transaction_costs.png)
 
 **Results (50 trials, 20 bps costs)**:
-| Strategy | Sharpe | # Trades | Total Costs |
-|:---------|:-------|:---------|:------------|
-| Oracle + No-trade | 0.47 | 162 | 4.7% |
-| Sig-KKF + No-trade | 0.47 | 117 | 2.6% |
-| Constant + No-trade | **0.48** | 6 | 0.1% |
-| Naive (daily) | 0.40 | 411 | 9.8% |
+| Strategy | Terminal | Sharpe | # Trades | Costs |
+|:---------|:---------|:-------|:---------|:------|
+| Oracle + NT | **1.38** | 0.47 | 162 | 4.7% |
+| Sig-KKF + NT | 1.41 | 0.47 | 117 | 2.6% |
+| Constant (θ) | 1.23 | **0.47** | 1 | 0.0% |
+| Naive | 1.35 | 0.40 | 411 | 9.8% |
 
-> **Insight**: No-trade region reduces costs by ~50% vs naive rebalancing
+> **Trade-off**: Constant saves on costs but sacrifices terminal wealth.
+> In presence of costs, adapting must be weighed against trading friction.
 
 ---
 
@@ -409,14 +410,15 @@ $$dv_t = \kappa(\theta - v_t)dt + \xi \sqrt{v_t} dW^v_t$$
 ![width:1100px](lqr_hedging.png)
 
 **Results (100 trials, 1-year ATM call)**:
-| Strategy | RMSE | Std Error | Max Error |
-|:---------|:-----|:----------|:----------|
-| Oracle | 4.96 | 4.10 | 9.54 |
-| **Sig-KKF** | **4.87** | 3.84 | 9.28 |
-| Constant | 5.07 | 4.43 | **12.58** |
+| Strategy | RMSE | Max Error | Interpretation |
+|:---------|:-----|:----------|:---------------|
+| Oracle | 4.96 | 9.54 | Best tail control |
+| Sig-KKF | 4.87 | 9.28 | Smoothing helps! |
+| Constant (θ) | **4.39** | **9.82** | Low avg, high tail |
 
-> **Key**: Sig-KKF achieves **lower RMSE than Oracle** via smoothing effect.
-> Constant vol has highest max error (dangerous for tail risk).
+> **Key**: Delta hedging is fairly robust to vol errors for ATM options.
+> Constant wins on RMSE but has worst MAX error (tail risk).
+> Vol estimation matters more for OTM options and vega hedging.
 
 ---
 

@@ -250,7 +250,7 @@ def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02):
 # 6. Main Experiment
 # ============================================================================
 
-def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001):
+def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001, theta=0.04):
     """Run multiple trials comparing strategies with transaction costs."""
 
     strategies = {
@@ -265,10 +265,11 @@ def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001):
     for trial in range(n_trials):
         S, v_true, returns = simulate_heston(n_steps=n_steps, seed=trial*100)
 
+        # FAIR: Use theta (model parameter), not in-sample mean
         v_estimates = {
             'true': v_true,
             'sigkkf': estimate_volatility_sigkkf(returns, n_steps),
-            'constant': np.full(n_steps, np.mean(v_true)),
+            'constant': np.full(n_steps, theta),  # Fair comparison
         }
 
         for name, config in strategies.items():
@@ -299,10 +300,11 @@ def create_figure():
     np.random.seed(42)
     n_steps = 1000
     tc = 0.002  # 20 bps transaction cost
+    theta = 0.04  # Model's long-run variance (fair comparison)
 
     S, v_true, returns = simulate_heston(n_steps=n_steps)
     v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
-    v_constant = np.full(n_steps, np.mean(v_true))
+    v_constant = np.full(n_steps, theta)  # Fair: use theta, not in-sample mean
 
     t = np.arange(n_steps) / 252
 
@@ -405,7 +407,7 @@ def create_figure():
     ax5 = fig.add_subplot(2, 3, 5)
 
     print("Running multi-trial experiment with transaction costs...")
-    summary, all_results = run_experiment(n_trials=50, transaction_cost=tc)
+    summary, all_results = run_experiment(n_trials=50, transaction_cost=tc, theta=theta)
 
     strategies = ['oracle_notrade', 'sigkkf_notrade', 'constant_notrade', 'naive']
     colors = ['#2c3e50', '#27ae60', '#3498db', '#e74c3c']
