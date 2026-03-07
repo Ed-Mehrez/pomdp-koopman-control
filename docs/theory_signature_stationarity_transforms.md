@@ -200,72 +200,188 @@ LS_λ(X) = ∫_0^∞ e^{-λt} Sig(X_{[0,t]}) dt
 
 This provides a path-space "regularized" feature that's bounded even for growing processes.
 
-## Joint Optimization: Transform + Segment
+## Theoretical Foundation: Ergodicity and Signature Growth
 
-When neither a global transform nor pure segmentation suffices, we need both.
-This can be formulated as a **variational problem in Hida-Malliavin calculus**.
+### From Lyapunov Functions to Signatures
 
-### The Variational Objective
+A diffusion dX = μ(X)dt + σ(X)dW is **ergodic** if and only if there exists a
+Lyapunov function V: R → R⁺ such that outside a compact set:
 
-Let X_t be the observed (non-ergodic) process. We seek:
-- g_θ: R → R (parameterized transformation)
-- τ = (τ_1,...,τ_K) (change points / stopping times)
-
-**Objective**: Minimize signature growth rate across segments:
 ```
-J(θ, τ, K) = Σ_{i=0}^K ||E[Sig(g_θ(X)_{[τ_i,τ_{i+1}]})]||² / (τ_{i+1} - τ_i)
-           + λ_1 · K                    (penalize segment count)
-           + λ_2 · complexity(g_θ)      (penalize transform complexity)
+LV(x) ≤ -c·V(x) + K    for some c > 0, K > 0
 ```
 
-The first term measures "signature growth rate" — for ergodic processes on each segment,
-this should be O(1), not growing with segment length.
+where L is the generator: Lf = μf' + ½σ²f''.
 
-### Hida Calculus Formulation
+**Example (OU is ergodic)**: For dX = -κX dt + σdW, take V(x) = x²:
+```
+LV = -2κx² + σ² ≤ -κx² + σ²  for |x| > σ/√κ  ✓
+```
 
-In white noise analysis, the **S-transform** of a random variable F is:
+**Example (GBM is NOT ergodic)**: For dX = μX dt + σX dW, take V(x) = x²:
+```
+LV = 2μx² + σ²x² = (2μ + σ²)x²  (no upper bound)  ✗
+```
+
+### The Key Theorem: Signature Growth Characterizes Ergodicity
+
+**Theorem** (Signature Growth and Mixing):
+Let X_t be a Markov diffusion with generator L. Define the signature growth rate:
+```
+γ(X) := lim sup_{T→∞} E[||Sig(X_{[0,T]})||²] / T
+```
+
+Then:
+1. If X is ergodic with spectral gap λ₁ > 0, then γ(X) < ∞
+2. If X is transient or null-recurrent, then γ(X) = ∞
+
+**Proof sketch**:
+For level-1 signature (displacement), E[X_T - X_0 | X_0 = x] satisfies:
+```
+∂/∂T E[X_T | X_0] = E[μ(X_T) | X_0]
+```
+
+For ergodic X with stationary distribution π:
+```
+E[μ(X_T) | X_0] → ∫ μ(y) π(dy) = μ̄  as T → ∞
+```
+So E[X_T - X_0] ~ μ̄·T (linear growth), giving ||Sig¹||²/T ~ μ̄² = O(1).
+
+For GBM: E[X_T | X_0 = x] = x·e^{μT} (exponential), so ||Sig¹||²/T → ∞.
+
+Higher signature levels follow similarly via iterated expectations. ∎
+
+### Optimal Transform via Spectral Gap Maximization
+
+The **spectral gap** of generator L is:
+```
+λ₁(L) = inf_{f: Ef=0, Var(f)=1} ⟨-Lf, f⟩_{L²(π)}
+```
+
+Larger spectral gap = faster mixing = smaller γ(X).
+
+For transformed process Y = g(X), the new generator is (by Itô):
+```
+L_g f(y) = ½[g'(g⁻¹(y))·σ(g⁻¹(y))]² f''(y)
+         + [g'·μ + ½g''·σ²](g⁻¹(y)) f'(y)
+```
+
+**Variational Principle**: The optimal transform maximizes the spectral gap:
+```
+g* = argmax_g λ₁(L_g)
+```
+
+Since λ₁ is hard to compute, we use γ(g(X)) as a **computable proxy**:
+```
+g* = argmin_g γ(g(X)) = argmin_g lim sup_{T→∞} E[||Sig(g(X)_{[0,T]})||²] / T
+```
+
+This is exactly minimizing signature growth rate — now theoretically justified.
+
+### MDL Derivation of the Joint Objective
+
+For segmentation, we use the **Minimum Description Length** principle.
+The description length of data X under model M = (g, τ₁,...,τ_K) is:
+
+```
+DL(X | M) = -log P(X | M) + log |M|
+```
+
+**Data term**: Under ergodicity on each segment, the log-likelihood scales as:
+```
+-log P(X | M) ∝ Σᵢ (τᵢ₊₁ - τᵢ) · γ(g(X) on [τᵢ, τᵢ₊₁])
+```
+This is because the transition density concentrates around the stationary
+distribution at rate e^{-λ₁·t}, and γ ~ 1/λ₁.
+
+**Model complexity term**:
+```
+log |M| = log(K) + log(complexity of g)
+```
+
+Minimizing DL gives:
+```
+J(g, τ, K) = Σᵢ T_i · γᵢ(g) + λ₁·K + λ₂·complexity(g)
+```
+
+where T_i = τᵢ₊₁ - τᵢ and γᵢ is the growth rate on segment i.
+
+**Normalizing by segment length** (since we measure γ = ||Sig||²/T):
+```
+J(g, τ, K) = Σᵢ ||Sig(g(X)_{[τᵢ,τᵢ₊₁]})||² / T_i + λ₁·K + λ₂·complexity(g)
+```
+
+This is our objective, now derived from first principles via MDL.
+
+## Hida-Malliavin Interpretation
+
+### S-Transform and Expected Signature
+
+In Hida's white noise analysis, the **S-transform** of a random variable F is:
 ```
 SF(ξ) = E[F · exp(∫ξ_t dW_t - ½∫ξ_t² dt)]
 ```
 
-The expected signature E[Sig(X)] is the path-space S-transform evaluated at ξ=0.
-For a diffusion dX = μdt + σdW, stationarity requires:
-
+The expected signature E[Sig(X_{[0,T]})] relates to the S-transform through:
 ```
-∂/∂t E[Sig(X_{[0,t]})] = L · E[Sig] + drift_correction → bounded
+E[Sig(X)] = S[Sig(X)](ξ=0)
 ```
 
-where L is the generator. The transform g modifies L:
+For a diffusion, E[Sig] satisfies a PDE driven by the generator:
 ```
-L_g f = ½(g'σ)² f'' + [g'μ + ½g''σ²] f'
-```
-
-**Variational condition**: g is optimal if L_g has a stationary distribution,
-which happens when the drift of L_g reverses sign (mean-reversion).
-
-### Wick Calculus Connection
-
-**Wick products** :·: are "renormalized" products in white noise analysis:
-```
-:W_t · W_s: = W_t · W_s - min(t,s)   (subtracted covariance)
-E[:F:] = 0  for F ≠ constant
+∂/∂T E[Sig(X_{[0,T]}) | X_0 = x] = L_x · E[Sig] + boundary terms
 ```
 
-The signature's iterated integrals relate to Wick exponentials:
+**Stationarity condition**: E[Sig]/T → const requires L to have spectral gap > 0.
+
+### Wick Renormalization and Log-Signatures
+
+**Wick products** :·: subtract the "expected pairing":
 ```
-∫∫_{s<t} dX_s dX_t = ½(X_T - X_0)² - ½⟨X⟩_T  (Wick-like decomposition)
+:W_t · W_s: = W_t · W_s - min(t,s)
+E[:F:] = 0  for F ≠ constant (chaos decomposition)
 ```
 
-The Lévy area is already "Wick-renormalized" (antisymmetric part).
-**Insight**: The log-signature is the natural Wick-like representative
-because it removes redundant symmetric terms.
-
-For stationarity, we want the **Wick-renormalized signature moments** to be bounded:
+The signature's iterated integrals decompose as:
 ```
-E[:Sig(g(X))^⊗n:] = O(1)  as T → ∞
+∫∫_{s<t} dX_s dX_t = ½(X_T - X_0)² - ½⟨X⟩_T
+                    = symmetric part + Lévy area
 ```
 
-This is equivalent to requiring g(X) to have a stationary distribution.
+The **log-signature** extracts the Lévy area (antisymmetric part), which is
+already "Wick-renormalized" in the sense that:
+```
+E[Lévy area | X stationary] = 0
+```
+
+**Insight**: The log-signature is the natural object for stationarity testing
+because its expectation vanishes for stationary processes, while growing
+signatures indicate non-stationarity.
+
+### Malliavin Derivative and Optimal Transforms
+
+The **Malliavin derivative** D_t F measures sensitivity to Brownian perturbation:
+```
+D_t X_T = σ(X_t) · ∂X_T/∂W_t
+```
+
+For the transformed process Y = g(X):
+```
+D_t Y_T = g'(X_T) · D_t X_T
+```
+
+The optimal transform g satisfies a variational equation:
+```
+δ/δg E[||Sig(g(X))||²/T] = 0
+```
+
+Using Malliavin calculus, this becomes:
+```
+E[Sig' · D(Sig)] · δg = 0  for all variations δg
+```
+
+This gives a PDE for g in terms of the process statistics — though in practice
+we solve it numerically via grid search over Box-Cox family.
 
 ### Parameterized Transform Families
 
