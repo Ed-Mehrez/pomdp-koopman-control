@@ -313,6 +313,99 @@ J(g, τ, K) = Σᵢ ||Sig(g(X)_{[τᵢ,τᵢ₊₁]})||² / T_i + λ₁·K + λ�
 
 This is our objective, now derived from first principles via MDL.
 
+### Principled Choice of λ₁ and λ₂
+
+From the MDL/BIC derivation, the penalties have specific forms:
+
+**Segment penalty λ₁** (BIC for change points):
+```
+λ₁ = ½ log(T) · σ²_sig
+```
+where σ²_sig is the typical signature variance per unit time. Intuitively:
+- Each change point needs O(log T) bits to specify its location
+- We scale by σ²_sig to match the units of the growth rate
+
+**Complexity penalty λ₂** (BIC for transform parameters):
+```
+λ₂ = ½ log(T) · dim(θ) / T
+```
+For Box-Cox with 1 parameter, this is ½ log(T) / T ≈ 0 for large T.
+The complexity penalty is typically negligible compared to segment penalty.
+
+**Practical defaults**: For daily financial data (T ~ 2500):
+```
+λ₁ ≈ 4-5    (≈ ½ log(2500) ≈ 3.9)
+λ₂ ≈ 0.003  (≈ 3.9 / 2500)
+```
+
+### Cross-Validation for λ Selection
+
+When MDL defaults don't work well, use **time-series cross-validation**:
+
+```python
+def cv_select_lambda(X, lambda_grid, n_folds=5):
+    """Select λ₁ via held-out signature growth rate."""
+    T = len(X)
+    fold_size = T // n_folds
+
+    best_lambda = lambda_grid[0]
+    best_score = float('inf')
+
+    for lam in lambda_grid:
+        scores = []
+        for fold in range(n_folds - 1):
+            # Train on folds 0..fold, validate on fold+1
+            train_end = (fold + 1) * fold_size
+            val_start = train_end
+            val_end = min(val_start + fold_size, T)
+
+            # Fit on training data
+            result = joint_optimize(X[:train_end], lambda_seg=lam)
+            g_lambda = result['box_cox_lambda']
+
+            # Evaluate on validation data
+            Y_val = box_cox_transform(X[val_start:val_end], g_lambda)
+            val_growth = signature_growth_rate(Y_val)
+            scores.append(val_growth)
+
+        mean_score = np.mean(scores)
+        if mean_score < best_score:
+            best_score = mean_score
+            best_lambda = lam
+
+    return best_lambda
+```
+
+### Stability Selection
+
+For robust λ selection, check stability across bootstrap samples:
+
+```python
+def stability_select_lambda(X, lambda_grid, n_bootstrap=20):
+    """Select λ where segmentation is stable across bootstraps."""
+    T = len(X)
+
+    stability_scores = []
+    for lam in lambda_grid:
+        n_segments_list = []
+        for _ in range(n_bootstrap):
+            # Block bootstrap (preserve local structure)
+            block_size = 126
+            n_blocks = T // block_size
+            boot_idx = np.random.choice(n_blocks, n_blocks, replace=True)
+            X_boot = np.concatenate([X[i*block_size:(i+1)*block_size] for i in boot_idx])
+
+            result = joint_optimize(X_boot, lambda_seg=lam)
+            n_segments_list.append(result['n_segments'])
+
+        # Stability = 1 / (1 + std of segment count)
+        stability = 1 / (1 + np.std(n_segments_list))
+        stability_scores.append((lam, stability, np.mean(n_segments_list)))
+
+    # Pick λ with highest stability (but n_segments > 1 if data is non-stationary)
+    return max(stability_scores, key=lambda x: x[1])
+```
+
 ## Hida-Malliavin Interpretation
 
 ### S-Transform and Expected Signature

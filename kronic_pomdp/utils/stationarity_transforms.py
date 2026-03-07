@@ -398,9 +398,91 @@ def optimal_segmentation_dp(Y: np.ndarray, cost_fn: Callable,
     return segments[::-1], DP[T]
 
 
+def mdl_lambda(T: int, sig_variance: float = 1.0) -> Tuple[float, float]:
+    """
+    Compute MDL-principled penalties from data length.
+
+    From BIC: penalty = ½ log(T) per parameter.
+    - λ₁: penalty per segment (change point needs log(T) bits to encode)
+    - λ₂: penalty per transform parameter (negligible for Box-Cox)
+
+    Args:
+        T: Length of time series
+        sig_variance: Typical signature variance per unit time (for scaling)
+
+    Returns:
+        (lambda_seg, lambda_complexity)
+    """
+    lambda_seg = 0.5 * np.log(T) * sig_variance
+    lambda_complexity = 0.5 * np.log(T) / T  # Negligible for large T
+    return lambda_seg, lambda_complexity
+
+
+def cv_select_lambda(X: np.ndarray,
+                     lambda_grid: list = None,
+                     n_folds: int = 5,
+                     verbose: bool = False) -> float:
+    """
+    Select segment penalty λ₁ via time-series cross-validation.
+
+    Splits data temporally, fits on early folds, evaluates growth rate on later fold.
+
+    Args:
+        X: Input time series
+        lambda_grid: List of λ values to try (default: [0.5, 1, 2, 4, 8])
+        n_folds: Number of temporal folds
+        verbose: Print progress
+
+    Returns:
+        Best λ₁ value
+    """
+    X = np.asarray(X).flatten()
+    T = len(X)
+    fold_size = T // n_folds
+
+    if lambda_grid is None:
+        # Default grid centered around MDL value
+        mdl_lam, _ = mdl_lambda(T)
+        lambda_grid = [mdl_lam * f for f in [0.25, 0.5, 1.0, 2.0, 4.0]]
+
+    best_lambda = lambda_grid[0]
+    best_score = float('inf')
+
+    for lam in lambda_grid:
+        scores = []
+        for fold in range(n_folds - 1):
+            train_end = (fold + 1) * fold_size
+            val_start = train_end
+            val_end = min(val_start + fold_size, T)
+
+            if val_end - val_start < 50:
+                continue
+
+            # Fit on training data
+            result = joint_optimize(X[:train_end], lambda_seg=lam,
+                                    min_seg_len=min(126, train_end // 4))
+            g_lambda = result['box_cox_lambda']
+
+            # Evaluate on validation data
+            Y_val = box_cox_transform(X[val_start:val_end], g_lambda)
+            val_growth = signature_growth_rate(Y_val)
+            if np.isfinite(val_growth):
+                scores.append(val_growth)
+
+        if scores:
+            mean_score = np.mean(scores)
+            if verbose:
+                print(f"  λ={lam:.2f}: CV growth={mean_score:.4f}")
+            if mean_score < best_score:
+                best_score = mean_score
+                best_lambda = lam
+
+    return best_lambda
+
+
 def joint_optimize(X: np.ndarray,
-                   lambda_seg: float = 1.0,
-                   lambda_complexity: float = 0.1,
+                   lambda_seg: float = None,
+                   lambda_complexity: float = None,
                    box_cox_grid: list = None,
                    min_seg_len: int = 126,
                    verbose: bool = False) -> Dict:
@@ -412,8 +494,8 @@ def joint_optimize(X: np.ndarray,
 
     Args:
         X: Input time series
-        lambda_seg: Penalty per segment (higher = fewer segments)
-        lambda_complexity: Penalty for transform complexity
+        lambda_seg: Penalty per segment. If None, uses MDL default ½log(T).
+        lambda_complexity: Penalty for transform complexity. If None, uses MDL default.
         box_cox_grid: List of λ values for Box-Cox transform
         min_seg_len: Minimum segment length
         verbose: Print progress
@@ -422,6 +504,15 @@ def joint_optimize(X: np.ndarray,
         Dictionary with optimal transform, segments, and diagnostics
     """
     X = np.asarray(X).flatten()
+    T = len(X)
+
+    # Use MDL-principled defaults if not specified
+    if lambda_seg is None or lambda_complexity is None:
+        mdl_seg, mdl_comp = mdl_lambda(T)
+        if lambda_seg is None:
+            lambda_seg = mdl_seg
+        if lambda_complexity is None:
+            lambda_complexity = mdl_comp
 
     if box_cox_grid is None:
         box_cox_grid = [0.0, 0.25, 0.5, 0.75, 1.0]

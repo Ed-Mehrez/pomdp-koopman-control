@@ -19,6 +19,8 @@ from kronic_pomdp.utils.stationarity_transforms import (
     box_cox_transform,
     signature_growth_rate,
     signature_mmd_diagnostic,
+    mdl_lambda,
+    cv_select_lambda,
 )
 
 
@@ -234,6 +236,46 @@ class TestChangePointDetection:
             f"Break point should have above-median signature distance"
 
 
+class TestLambdaSelection:
+    """Test principled lambda selection methods."""
+
+    def test_mdl_lambda_scales_with_T(self):
+        """MDL lambda should scale as log(T)."""
+        lam_1000, _ = mdl_lambda(1000)
+        lam_10000, _ = mdl_lambda(10000)
+
+        # log(10000) / log(1000) ≈ 1.33
+        ratio = lam_10000 / lam_1000
+        expected_ratio = np.log(10000) / np.log(1000)
+
+        assert 0.9 * expected_ratio < ratio < 1.1 * expected_ratio, \
+            f"MDL lambda should scale as log(T), got ratio {ratio:.2f}"
+        print(f"  MDL λ ratio: {ratio:.3f} (expected {expected_ratio:.3f})")
+
+    def test_mdl_lambda_reasonable_values(self):
+        """MDL lambda should give reasonable values for typical data lengths."""
+        # Daily data for 10 years
+        lam, comp = mdl_lambda(2520)
+
+        # λ₁ should be around 3-5 for T=2520
+        assert 2 < lam < 10, f"MDL λ₁ should be ~4 for T=2520, got {lam:.2f}"
+        # λ₂ should be very small
+        assert comp < 0.01, f"MDL λ₂ should be negligible, got {comp:.4f}"
+        print(f"  MDL for T=2520: λ₁={lam:.3f}, λ₂={comp:.6f}")
+
+    def test_cv_select_returns_valid_lambda(self):
+        """CV selection should return a lambda from the grid."""
+        np.random.seed(42)
+        X = simulate_gbm(T=1000)
+
+        lambda_grid = [0.5, 1.0, 2.0, 4.0]
+        best_lam = cv_select_lambda(X, lambda_grid=lambda_grid, n_folds=3)
+
+        assert best_lam in lambda_grid, \
+            f"CV should return lambda from grid, got {best_lam}"
+        print(f"  CV selected λ={best_lam}")
+
+
 class TestBoxCox:
     """Test Box-Cox transform."""
 
@@ -266,6 +308,7 @@ def run_all_tests():
         TestSignatureGrowth,
         TestMMDDiagnostic,
         TestChangePointDetection,
+        TestLambdaSelection,
         TestBoxCox,
     ]
 
