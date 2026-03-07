@@ -257,6 +257,152 @@ def compute_lead_lag_signature(path_1d: np.ndarray, level: int = 2) -> np.ndarra
     ll_path = compute_lead_lag_path(path_1d)
     return compute_log_signature(ll_path, level=level)
 
+class RecurrentLeadLagLogSigMap:
+    """
+    Recurrent Lead-Lag Log-Signature with BCH updates.
+
+    For a d-dimensional input stream, applies lead-lag embedding to get a
+    2d-dimensional path, then maintains the log-signature via BCH.
+
+    Each input increment dx produces TWO BCH updates:
+      1. (dx, 0) — lead moves, lag stays
+      2. (0, dx) — lag catches up to lead
+
+    The Levy area between lead_i and lag_i captures quadratic variation
+    of channel i: Area(lead_i, lag_i) = sum of dx_i^2.
+
+    At level 2 for input dim d:
+      - Lead-lag dim: 2d
+      - Log-sig level 1: 2d components
+      - Log-sig level 2: 2d*(2d-1)/2 components (Levy areas)
+      - Total features: 2d + d*(2d-1)
+
+    For d=1 (returns only): 2 + 1 = 3 features (displacement + QV)
+    For d=2 (time+return): 4 + 6 = 10 features
+    """
+    def __init__(self, state_dim, level=2, forgetting_factor=1.0):
+        self.d_input = state_dim
+        self.d = 2 * state_dim  # lead-lag doubles dimensions
+        self.level = level
+        self.gamma = forgetting_factor
+
+        # Log-sig dimensions in lead-lag space
+        self.dim_l1 = self.d
+        self.dim_l2 = self.d * (self.d - 1) // 2
+        self.feature_dim = self.dim_l1 + self.dim_l2
+
+        self.reset()
+
+    def reset(self):
+        self.l1 = np.zeros(self.dim_l1)
+        self.l2 = np.zeros(self.dim_l2)
+
+    def _bch_update(self, dx_ll):
+        """Single BCH update in lead-lag space."""
+        a1 = self.gamma * self.l1
+        a2 = self.gamma ** 2 * self.l2
+
+        # Lie bracket [a_decayed, dx_ll] at level 2
+        bracket = np.zeros(self.dim_l2)
+        idx = 0
+        for i in range(self.d):
+            for j in range(i + 1, self.d):
+                bracket[idx] = a1[i] * dx_ll[j] - a1[j] * dx_ll[i]
+                idx += 1
+
+        self.l1 = a1 + dx_ll
+        self.l2 = a2 + 0.5 * bracket
+
+    def update(self, dx):
+        """
+        Lead-lag update: each input increment dx produces two BCH steps.
+
+        Step 1: lead moves by dx, lag stays: dx_ll = (dx[0], dx[1], ..., 0, 0, ...)
+        Step 2: lag catches up:              dx_ll = (0, 0, ..., dx[0], dx[1], ...)
+
+        The Levy area between lead_i and lag_i accumulates dx_i^2.
+        """
+        # Step 1: lead moves
+        dx_lead = np.zeros(self.d)
+        dx_lead[:self.d_input] = dx
+        self._bch_update(dx_lead)
+
+        # Step 2: lag catches up
+        dx_lag = np.zeros(self.d)
+        dx_lag[self.d_input:] = dx
+        self._bch_update(dx_lag)
+
+        return self.get_features()
+
+    def get_features(self):
+        return np.concatenate([self.l1, self.l2])
+
+
+class RecurrentLogSignatureMap:
+    """
+    Recurrent Log-Signature with BCH updates and optional exponential decay.
+
+    Works in the log-signature (Lie algebra) space. At level 2 for d dimensions:
+      - Level 1: d components (displacement)
+      - Level 2: d*(d-1)/2 components (Levy area / antisymmetric part)
+      - Total: d + d*(d-1)/2 features (3 for d=2, vs 6 for full sig)
+
+    BCH formula (exact at level 2):
+      log(exp(a) * exp(b)) = a + b + [a,b]/2
+
+    With decay gamma:
+      a_decayed = gamma * a_old
+      logsig_new = a_decayed + dx + [a_decayed, dx]/2
+
+    The log-signature is more compact (no symmetric part) and the Levy area
+    captures the essential path geometry (signed area = path ordering).
+    """
+    def __init__(self, state_dim, level=2, forgetting_factor=1.0):
+        self.d = state_dim
+        self.level = level
+        self.gamma = forgetting_factor
+
+        # Dimensions
+        self.dim_l1 = self.d
+        self.dim_l2 = self.d * (self.d - 1) // 2  # antisymmetric only
+        self.feature_dim = self.dim_l1 + self.dim_l2
+
+        self.reset()
+
+    def reset(self):
+        self.l1 = np.zeros(self.dim_l1)
+        self.l2 = np.zeros(self.dim_l2)
+
+    def update(self, dx):
+        """
+        BCH update: logsig_new = gamma*logsig_old + dx + [gamma*logsig_old, dx]/2
+
+        For d=2: [a, b]_area = a[0]*b[1] - a[1]*b[0]  (single component)
+        For general d: [a, b]_{ij} = a[i]*b[j] - a[j]*b[i] for i<j
+        """
+        # Decay previous state
+        a1 = self.gamma * self.l1
+        a2 = self.gamma ** 2 * self.l2
+
+        # Lie bracket [a_decayed, dx] at level 2
+        # For each pair (i,j) with i<j: bracket_{ij} = a1[i]*dx[j] - a1[j]*dx[i]
+        bracket = np.zeros(self.dim_l2)
+        idx = 0
+        for i in range(self.d):
+            for j in range(i + 1, self.d):
+                bracket[idx] = a1[i] * dx[j] - a1[j] * dx[i]
+                idx += 1
+
+        # BCH: level 1 just adds, level 2 adds + bracket/2
+        self.l1 = a1 + dx
+        self.l2 = a2 + 0.5 * bracket
+
+        return self.get_features()
+
+    def get_features(self):
+        return np.concatenate([self.l1, self.l2])
+
+
 class RecurrentSignatureMap:
     """
     Implements Recurrent Signatures (Chen's Identity) for infinite memory.
