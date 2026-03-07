@@ -200,10 +200,201 @@ LS_λ(X) = ∫_0^∞ e^{-λt} Sig(X_{[0,t]}) dt
 
 This provides a path-space "regularized" feature that's bounded even for growing processes.
 
+## Joint Optimization: Transform + Segment
+
+When neither a global transform nor pure segmentation suffices, we need both.
+This can be formulated as a **variational problem in Hida-Malliavin calculus**.
+
+### The Variational Objective
+
+Let X_t be the observed (non-ergodic) process. We seek:
+- g_θ: R → R (parameterized transformation)
+- τ = (τ_1,...,τ_K) (change points / stopping times)
+
+**Objective**: Minimize signature growth rate across segments:
+```
+J(θ, τ, K) = Σ_{i=0}^K ||E[Sig(g_θ(X)_{[τ_i,τ_{i+1}]})]||² / (τ_{i+1} - τ_i)
+           + λ_1 · K                    (penalize segment count)
+           + λ_2 · complexity(g_θ)      (penalize transform complexity)
+```
+
+The first term measures "signature growth rate" — for ergodic processes on each segment,
+this should be O(1), not growing with segment length.
+
+### Hida Calculus Formulation
+
+In white noise analysis, the **S-transform** of a random variable F is:
+```
+SF(ξ) = E[F · exp(∫ξ_t dW_t - ½∫ξ_t² dt)]
+```
+
+The expected signature E[Sig(X)] is the path-space S-transform evaluated at ξ=0.
+For a diffusion dX = μdt + σdW, stationarity requires:
+
+```
+∂/∂t E[Sig(X_{[0,t]})] = L · E[Sig] + drift_correction → bounded
+```
+
+where L is the generator. The transform g modifies L:
+```
+L_g f = ½(g'σ)² f'' + [g'μ + ½g''σ²] f'
+```
+
+**Variational condition**: g is optimal if L_g has a stationary distribution,
+which happens when the drift of L_g reverses sign (mean-reversion).
+
+### Wick Calculus Connection
+
+**Wick products** :·: are "renormalized" products in white noise analysis:
+```
+:W_t · W_s: = W_t · W_s - min(t,s)   (subtracted covariance)
+E[:F:] = 0  for F ≠ constant
+```
+
+The signature's iterated integrals relate to Wick exponentials:
+```
+∫∫_{s<t} dX_s dX_t = ½(X_T - X_0)² - ½⟨X⟩_T  (Wick-like decomposition)
+```
+
+The Lévy area is already "Wick-renormalized" (antisymmetric part).
+**Insight**: The log-signature is the natural Wick-like representative
+because it removes redundant symmetric terms.
+
+For stationarity, we want the **Wick-renormalized signature moments** to be bounded:
+```
+E[:Sig(g(X))^⊗n:] = O(1)  as T → ∞
+```
+
+This is equivalent to requiring g(X) to have a stationary distribution.
+
+### Parameterized Transform Families
+
+**Box-Cox family** (1 parameter):
+```
+g_λ(x) = (x^λ - 1)/λ  for λ ≠ 0
+       = log(x)        for λ = 0
+```
+Includes log (λ→0), sqrt (λ=0.5), identity (λ=1).
+
+**Power transform** (2 parameters):
+```
+g_{α,β}(x) = sign(x - β)|x - β|^α
+```
+Handles shifts and different power laws.
+
+**Sinh-arcsinh transform** (2 parameters, handles heavy tails):
+```
+g_{ε,δ}(x) = sinh(δ · arcsinh(x) - ε)
+```
+
+### Practical Algorithm
+
+```python
+def joint_optimize(X, lambda_seg=1.0, lambda_complexity=0.1):
+    """
+    Joint optimization over transform and segmentation.
+
+    Stage 1: Grid search over Box-Cox λ
+    Stage 2: For each λ, find optimal segmentation via DP
+    Stage 3: Select (λ*, τ*) minimizing total objective
+    """
+    best_obj = float('inf')
+    best_lambda = 1.0
+    best_segments = [(0, len(X))]
+
+    # Stage 1: Transform candidates
+    for lam in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        Y = box_cox_transform(X, lam)
+
+        # Stage 2: Optimal segmentation via dynamic programming
+        segments, seg_obj = optimal_segmentation_dp(
+            Y,
+            cost_fn=signature_growth_rate,
+            penalty=lambda_seg
+        )
+
+        # Total objective
+        complexity = abs(lam - 1.0)  # Distance from identity
+        obj = seg_obj + lambda_complexity * complexity
+
+        if obj < best_obj:
+            best_obj = obj
+            best_lambda = lam
+            best_segments = segments
+
+    return best_lambda, best_segments
+
+def optimal_segmentation_dp(Y, cost_fn, penalty, min_seg_len=50):
+    """
+    Dynamic programming for optimal segmentation.
+
+    DP[t] = min cost to segment Y[0:t]
+    DP[t] = min_{s < t} { DP[s] + cost(Y[s:t]) + penalty }
+    """
+    T = len(Y)
+    DP = np.full(T + 1, np.inf)
+    DP[0] = 0
+    parent = np.zeros(T + 1, dtype=int)
+
+    for t in range(min_seg_len, T + 1):
+        for s in range(0, t - min_seg_len + 1):
+            seg_cost = cost_fn(Y[s:t])
+            total = DP[s] + seg_cost + penalty
+            if total < DP[t]:
+                DP[t] = total
+                parent[t] = s
+
+    # Backtrack to get segments
+    segments = []
+    t = T
+    while t > 0:
+        s = parent[t]
+        segments.append((s, t))
+        t = s
+
+    return segments[::-1], DP[T]
+
+def signature_growth_rate(Y):
+    """Cost function: signature norm / sqrt(length)."""
+    if len(Y) < 10:
+        return float('inf')
+    path = np.column_stack([np.linspace(0, 1, len(Y)), Y])
+    sig = compute_log_signature(path, level=2)
+    # For stationary process, ||Sig|| ~ O(sqrt(T))
+    # So ||Sig||² / T should be O(1)
+    return np.linalg.norm(sig)**2 / len(Y)
+```
+
+### Theoretical Guarantee (Informal)
+
+**Theorem** (Existence of optimal transform-segmentation):
+For a continuous semimartingale X with bounded p-variation on [0,T],
+there exists an optimal (g*, τ*) minimizing J(θ, τ, K) such that:
+1. On each segment [τ_i, τ_{i+1}], g*(X) is ergodic
+2. The number of segments K* ≤ C · (variation of X) / λ_1
+
+The proof uses compactness of the transform family and the signature's
+universal approximation property.
+
+### When Each Approach Dominates
+
+| Scenario | Transform Only | Segment Only | Joint |
+|----------|---------------|--------------|-------|
+| GBM (constant drift) | log ✓ | ✗ | log, 1 seg |
+| OU (stationary) | none ✓ | ✗ | none, 1 seg |
+| Regime-switching OU | ✗ | ✓ | none, K segs |
+| GBM with drift change | ✗ | ✗ | log, K segs ✓ |
+| CEV with β change | sqrt? | ✓ | power, K segs ✓ |
+
+The joint approach is most valuable for **GBM-like processes with regime changes**
+where neither pure transform nor pure segmentation works.
+
 ## References
 
 - Hambly & Lyons (2010): Uniqueness for the signature of a path
 - Chevyrev & Lyons (2016): Characteristic functions of measures on geometric rough paths
 - Hida (1980): Brownian Motion (S-transform and white noise analysis)
 - Kraft (2005): Optimal portfolios with stochastic short rate
+- Nualart (2006): Malliavin Calculus and Related Topics (variational methods)
+- Box & Cox (1964): An analysis of transformations (power transforms)
 

@@ -301,6 +301,257 @@ def find_best_transform(X: np.ndarray, candidates: list = None,
     return best
 
 
+# ======================================================================
+# Joint Optimization: Transform + Segmentation
+# ======================================================================
+
+def box_cox_transform(X: np.ndarray, lam: float, shift: float = 0) -> np.ndarray:
+    """
+    Box-Cox transform: (x^λ - 1)/λ for λ≠0, log(x) for λ=0.
+    Handles negative values via shift.
+    """
+    X = np.asarray(X) + shift
+    if np.any(X <= 0):
+        X = X - np.min(X) + 1e-6
+
+    if abs(lam) < 1e-10:
+        return np.log(X)
+    else:
+        return (np.power(X, lam) - 1) / lam
+
+
+def signature_growth_rate(Y: np.ndarray, window: int = 63) -> float:
+    """
+    Cost function: normalized signature norm.
+    For stationary process, ||Sig||² / T should be O(1).
+    """
+    if len(Y) < window:
+        return float('inf')
+
+    path = np.column_stack([np.linspace(0, 1, len(Y)), Y])
+    try:
+        sig = compute_log_signature(path, level=2)
+        # Normalize by length (stationary processes have ||Sig|| ~ sqrt(T))
+        return np.linalg.norm(sig)**2 / len(Y)
+    except:
+        return float('inf')
+
+
+def optimal_segmentation_dp(Y: np.ndarray, cost_fn: Callable,
+                            penalty: float = 1.0,
+                            min_seg_len: int = 50,
+                            max_segments: int = 20) -> Tuple[list, float]:
+    """
+    Dynamic programming for optimal segmentation.
+
+    DP[t] = min cost to segment Y[0:t]
+    DP[t] = min_{s < t} { DP[s] + cost(Y[s:t]) + penalty }
+
+    Returns:
+        (segments, total_cost) where segments is list of (start, end) tuples
+    """
+    T = len(Y)
+    if T < min_seg_len:
+        return [(0, T)], cost_fn(Y)
+
+    # DP arrays
+    DP = np.full(T + 1, np.inf)
+    DP[0] = 0
+    parent = np.zeros(T + 1, dtype=int)
+    n_segs = np.zeros(T + 1, dtype=int)
+
+    # Compute costs for candidate segments (with caching)
+    cost_cache = {}
+
+    def get_cost(s, t):
+        if (s, t) not in cost_cache:
+            cost_cache[(s, t)] = cost_fn(Y[s:t])
+        return cost_cache[(s, t)]
+
+    # DP iteration
+    for t in range(min_seg_len, T + 1):
+        for s in range(max(0, t - T // 2), t - min_seg_len + 1):
+            if n_segs[s] >= max_segments:
+                continue
+
+            seg_cost = get_cost(s, t)
+            if not np.isfinite(seg_cost):
+                continue
+
+            total = DP[s] + seg_cost + penalty
+            if total < DP[t]:
+                DP[t] = total
+                parent[t] = s
+                n_segs[t] = n_segs[s] + 1
+
+    # Backtrack to get segments
+    if not np.isfinite(DP[T]):
+        return [(0, T)], cost_fn(Y)
+
+    segments = []
+    t = T
+    while t > 0:
+        s = parent[t]
+        segments.append((s, t))
+        t = s
+
+    return segments[::-1], DP[T]
+
+
+def joint_optimize(X: np.ndarray,
+                   lambda_seg: float = 1.0,
+                   lambda_complexity: float = 0.1,
+                   box_cox_grid: list = None,
+                   min_seg_len: int = 126,
+                   verbose: bool = False) -> Dict:
+    """
+    Joint optimization over transform and segmentation.
+
+    Solves the variational problem:
+        min_{θ,τ,K} Σ ||Sig(g_θ(X)_{segment_i})||²/len + λ₁·K + λ₂·complexity(θ)
+
+    Args:
+        X: Input time series
+        lambda_seg: Penalty per segment (higher = fewer segments)
+        lambda_complexity: Penalty for transform complexity
+        box_cox_grid: List of λ values for Box-Cox transform
+        min_seg_len: Minimum segment length
+        verbose: Print progress
+
+    Returns:
+        Dictionary with optimal transform, segments, and diagnostics
+    """
+    X = np.asarray(X).flatten()
+
+    if box_cox_grid is None:
+        box_cox_grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    best_obj = float('inf')
+    best_result = None
+
+    for lam in box_cox_grid:
+        # Apply transform
+        try:
+            Y = box_cox_transform(X, lam)
+            if not np.all(np.isfinite(Y)):
+                continue
+        except:
+            continue
+
+        # Find optimal segmentation
+        segments, seg_obj = optimal_segmentation_dp(
+            Y,
+            cost_fn=signature_growth_rate,
+            penalty=lambda_seg,
+            min_seg_len=min_seg_len
+        )
+
+        # Complexity penalty (distance from identity transform)
+        complexity = abs(lam - 1.0)
+
+        # Total objective
+        obj = seg_obj + lambda_complexity * complexity
+
+        if verbose:
+            print(f"  λ={lam:.2f}: {len(segments)} segments, "
+                  f"seg_cost={seg_obj:.4f}, total={obj:.4f}")
+
+        if obj < best_obj:
+            best_obj = obj
+            best_result = {
+                'box_cox_lambda': lam,
+                'segments': segments,
+                'n_segments': len(segments),
+                'segment_cost': seg_obj,
+                'complexity_cost': lambda_complexity * complexity,
+                'total_objective': obj,
+                'transformed_data': Y
+            }
+
+    if best_result is None:
+        # Fallback: no transform, single segment
+        best_result = {
+            'box_cox_lambda': 1.0,
+            'segments': [(0, len(X))],
+            'n_segments': 1,
+            'segment_cost': signature_growth_rate(X),
+            'complexity_cost': 0,
+            'total_objective': signature_growth_rate(X),
+            'transformed_data': X.copy()
+        }
+
+    return best_result
+
+
+def find_ergodic_segments(X: np.ndarray, transform: str = 'auto',
+                          min_seg_len: int = 126,
+                          verbose: bool = False) -> Dict:
+    """
+    High-level API: Find segments where process is approximately ergodic.
+
+    Args:
+        X: Input time series
+        transform: 'auto', 'none', 'log', 'sqrt', or Box-Cox λ value
+        min_seg_len: Minimum segment length
+        verbose: Print diagnostics
+
+    Returns:
+        Dictionary with segments and per-segment stationarity diagnostics
+    """
+    X = np.asarray(X).flatten()
+
+    # Determine transform
+    if transform == 'auto':
+        result = joint_optimize(X, min_seg_len=min_seg_len, verbose=verbose)
+        lam = result['box_cox_lambda']
+        segments = result['segments']
+        Y = result['transformed_data']
+    elif transform == 'none':
+        lam = 1.0
+        Y = X.copy()
+        segments, _ = optimal_segmentation_dp(Y, signature_growth_rate,
+                                               min_seg_len=min_seg_len)
+    elif transform == 'log':
+        lam = 0.0
+        Y = box_cox_transform(X, 0.0)
+        segments, _ = optimal_segmentation_dp(Y, signature_growth_rate,
+                                               min_seg_len=min_seg_len)
+    elif transform == 'sqrt':
+        lam = 0.5
+        Y = box_cox_transform(X, 0.5)
+        segments, _ = optimal_segmentation_dp(Y, signature_growth_rate,
+                                               min_seg_len=min_seg_len)
+    else:
+        # Assume numeric Box-Cox lambda
+        lam = float(transform)
+        Y = box_cox_transform(X, lam)
+        segments, _ = optimal_segmentation_dp(Y, signature_growth_rate,
+                                               min_seg_len=min_seg_len)
+
+    # Compute per-segment diagnostics
+    seg_diagnostics = []
+    for start, end in segments:
+        seg_Y = Y[start:end]
+        diag = signature_mmd_diagnostic(seg_Y, window_size=min(63, len(seg_Y)//3))
+        seg_diagnostics.append({
+            'start': start,
+            'end': end,
+            'length': end - start,
+            'is_stationary': diag['is_stationary'],
+            'mmd_trend': diag['mmd_trend'],
+            'growth_rate': signature_growth_rate(seg_Y)
+        })
+
+    return {
+        'transform': f'box_cox(λ={lam:.2f})',
+        'box_cox_lambda': lam,
+        'n_segments': len(segments),
+        'segments': segments,
+        'segment_diagnostics': seg_diagnostics,
+        'transformed_data': Y
+    }
+
+
 # Demo
 if __name__ == '__main__':
     np.random.seed(42)
@@ -358,3 +609,31 @@ if __name__ == '__main__':
           f"mmd_trend={diag_raw['mmd_trend']:.4f}")
     print(f"   log(GBM): stationary={diag_log['is_stationary']}, "
           f"mmd_trend={diag_log['mmd_trend']:.4f}")
+
+    # Test 5: Joint optimization on regime-switching GBM
+    print("\n5. Joint Optimization: Regime-switching GBM")
+    # Simulate GBM with drift change at t=1260
+    T = 2520
+    dW = np.random.randn(T) * np.sqrt(dt)
+    S_regime = np.zeros(T)
+    S_regime[0] = 100
+    for t in range(1, T):
+        mu_t = 0.10 if t < 1260 else -0.05  # Drift switch
+        S_regime[t] = S_regime[t-1] * np.exp((mu_t - 0.5*0.2**2)*dt + 0.2*dW[t])
+
+    print("   Running joint optimization...")
+    result = joint_optimize(S_regime, lambda_seg=5.0, verbose=True)
+    print(f"\n   Optimal: Box-Cox λ={result['box_cox_lambda']:.2f}, "
+          f"{result['n_segments']} segments")
+    for i, (s, e) in enumerate(result['segments']):
+        print(f"     Segment {i+1}: [{s}, {e}) (len={e-s})")
+
+    # Test 6: High-level API
+    print("\n6. High-level API: find_ergodic_segments")
+    segs = find_ergodic_segments(S_regime, transform='auto', verbose=False)
+    print(f"   Transform: {segs['transform']}")
+    print(f"   Segments: {segs['n_segments']}")
+    for sd in segs['segment_diagnostics']:
+        print(f"     [{sd['start']}, {sd['end']}): "
+              f"stationary={sd['is_stationary']}, "
+              f"growth_rate={sd['growth_rate']:.4f}")
