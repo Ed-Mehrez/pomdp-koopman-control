@@ -21,6 +21,9 @@ from kronic_pomdp.utils.stationarity_transforms import (
     signature_mmd_diagnostic,
     mdl_lambda,
     cv_select_lambda,
+    signature_bubble_test,
+    simulate_cev,
+    validate_bubble_test,
 )
 
 
@@ -276,6 +279,56 @@ class TestLambdaSelection:
         print(f"  CV selected λ={best_lam}")
 
 
+class TestBubbleDetection:
+    """Test signature-based bubble detection (Jarrow-Protter framework)."""
+
+    def test_cev_bubble_detection(self):
+        """CEV with β > 2 should be detected as bubble."""
+        # β = 2.5 is a bubble (strict local martingale)
+        S = simulate_cev(T=3000, beta=2.5, seed=42)
+        result = signature_bubble_test(S, window_size=63, verbose=False)
+
+        assert result['is_bubble'] == True, \
+            f"β=2.5 should be bubble, got α={result['alpha']:.2f}"
+        assert result['alpha'] > 2.0, \
+            f"α should be > 2 for bubble, got {result['alpha']:.2f}"
+        print(f"  β=2.5: α̂={result['alpha']:.2f}, bubble={result['is_bubble']}")
+
+    def test_cev_no_bubble_detection(self):
+        """CEV with β ≤ 2 should NOT be detected as bubble."""
+        # β = 1.5 is NOT a bubble (true martingale)
+        S = simulate_cev(T=3000, beta=1.5, seed=42)
+        result = signature_bubble_test(S, window_size=63, verbose=False)
+
+        assert result['is_bubble'] == False, \
+            f"β=1.5 should NOT be bubble, got α={result['alpha']:.2f}"
+        assert result['alpha'] < 2.0, \
+            f"α should be < 2 for non-bubble, got {result['alpha']:.2f}"
+        print(f"  β=1.5: α̂={result['alpha']:.2f}, bubble={result['is_bubble']}")
+
+    def test_alpha_estimates_accuracy(self):
+        """α estimates should be close to true β values."""
+        results = validate_bubble_test(betas=[1.5, 2.0, 2.5, 3.0],
+                                        n_paths=3, T=2000, verbose=False)
+
+        for beta, r in results.items():
+            # α̂ should be within 0.3 of true β
+            assert abs(r['mean_alpha'] - beta) < 0.3, \
+                f"β={beta}: α̂={r['mean_alpha']:.2f} too far from true"
+            print(f"  β={beta}: α̂={r['mean_alpha']:.2f}±{r['std_alpha']:.2f}")
+
+    def test_gbm_not_bubble(self):
+        """GBM (β=2) should NOT be detected as bubble."""
+        # GBM is exactly β=2, which is the boundary
+        S = simulate_cev(T=3000, beta=2.0, seed=42)
+        result = signature_bubble_test(S, window_size=63, verbose=False)
+
+        # α should be ≈ 2, not significantly > 2
+        assert result['is_bubble'] == False, \
+            f"GBM should NOT be bubble, got α={result['alpha']:.2f}"
+        print(f"  GBM (β=2): α̂={result['alpha']:.2f}, bubble={result['is_bubble']}")
+
+
 class TestBoxCox:
     """Test Box-Cox transform."""
 
@@ -310,6 +363,7 @@ def run_all_tests():
         TestChangePointDetection,
         TestLambdaSelection,
         TestBoxCox,
+        TestBubbleDetection,
     ]
 
     total_pass = 0

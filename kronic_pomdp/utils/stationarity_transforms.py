@@ -574,6 +574,328 @@ def joint_optimize(X: np.ndarray,
     return best_result
 
 
+# ======================================================================
+# Signature-Based Bubble Detection (Jarrow-Protter Framework)
+# ======================================================================
+
+def signature_bubble_test(S: np.ndarray, window_size: int = 63,
+                          min_windows: int = 10,
+                          confidence_level: float = 0.95,
+                          verbose: bool = False) -> Dict:
+    """
+    Test for asset price bubbles using lead-lag signature Lévy area scaling.
+
+    THEORY (Jarrow-Protter Framework):
+    ----------------------------------
+    A bubble exists when the price process is a strict local martingale
+    (local martingale that is NOT a true martingale). By Dandapani-Protter (2019),
+    this is equivalent to explosion under an equivalent measure change.
+
+    By Khasminskii's non-explosion criterion, the process explodes iff there is
+    NO Lyapunov function V with LV - λV ≤ 0 for the generator L.
+
+    For CEV-type processes dS = μS dt + σS^{β/2} dW:
+    - β ≤ 2: True martingale (no bubble)
+    - β > 2: Strict local martingale (BUBBLE)
+
+    METHOD (Lead-Lag Signature):
+    ----------------------------
+    The test exploits that QV ~ S^β for CEV processes:
+    1. For each window, compute the LEAD-LAG log-signature of the price path
+    2. The Lévy area between lead and lag channels = Σ(ΔS)² = QV
+    3. Regress log(QV) ~ α·log(S̄) where S̄ is mean price in window
+    4. Bubble ⟺ α > 2
+
+    Note: Plain (time, price) Lévy area does NOT equal QV. The lead-lag
+    transform is essential for capturing quadratic variation via signatures.
+
+    Args:
+        S: Price time series (1D array, must be positive)
+        window_size: Size of non-overlapping windows for Lévy area computation
+        min_windows: Minimum number of windows required
+        confidence_level: Confidence level for hypothesis test
+        verbose: Print diagnostic information
+
+    Returns:
+        Dictionary with:
+        - 'is_bubble': Boolean, True if α > 2 at specified confidence
+        - 'alpha': Estimated scaling exponent
+        - 'alpha_se': Standard error of α estimate
+        - 'alpha_ci': Confidence interval for α
+        - 'p_value': P-value for H0: α ≤ 2 vs H1: α > 2
+        - 'n_windows': Number of windows used
+        - 'diagnostics': Additional diagnostic information
+
+    References:
+        - Jarrow, Protter, Shimbo (2010): Asset Price Bubbles in Incomplete Markets
+        - Dandapani, Protter (2019): Strict Local Martingales via Filtration Enlargement
+        - Khasminskii (2012): Stochastic Stability of Differential Equations
+    """
+    from scipy import stats
+
+    S = np.asarray(S).flatten()
+    T = len(S)
+
+    # Validate inputs
+    if not np.all(S > 0):
+        raise ValueError("Price series must be strictly positive")
+
+    if T < window_size * min_windows:
+        window_size = max(T // min_windows, 10)
+
+    n_windows = T // window_size
+    if n_windows < min_windows:
+        return {
+            'is_bubble': None,
+            'alpha': np.nan,
+            'alpha_se': np.nan,
+            'alpha_ci': (np.nan, np.nan),
+            'p_value': np.nan,
+            'n_windows': n_windows,
+            'diagnostics': {'error': f'Insufficient data: {n_windows} < {min_windows} windows'}
+        }
+
+    # Compute QV via lead-lag signature Lévy area
+    # For 1D path S, the lead-lag transform creates 2D path (S_lead, S_lag)
+    # The Lévy area between lead and lag = Σ(ΔS)² = QV
+    # For CEV: dS = μS dt + σS^{β/2} dW, so QV ~ S^β
+    # Regressing log(QV) ~ α·log(S̄) gives α ≈ β
+
+    # Import lead-lag signature computation
+    from signature_features import compute_lead_lag_signature
+
+    qv_estimates = []
+    mean_prices = []
+
+    for i in range(n_windows):
+        start = i * window_size
+        end = (i + 1) * window_size
+        window_S = S[start:end]
+
+        # Compute lead-lag log-signature
+        # For 1D input: output is [lead_disp, lag_disp, levy_area]
+        # The levy_area = QV/2 (due to the lead-lag construction)
+        ll_sig = compute_lead_lag_signature(window_S, level=2)
+
+        # Lévy area is the last component (index 2 for 1D lead-lag)
+        # Area = Σ (S_lead - S_lag) wedge d(S_lead, S_lag) = Σ ΔS²
+        levy_area = ll_sig[-1] if len(ll_sig) >= 3 else 0
+        qv = abs(levy_area)  # QV is positive; area sign depends on direction
+
+        if qv > 1e-15:  # Filter degenerate windows
+            qv_estimates.append(qv)
+            mean_prices.append(np.mean(window_S))
+
+    qv_estimates = np.array(qv_estimates)
+    mean_prices = np.array(mean_prices)
+
+    if len(qv_estimates) < min_windows // 2:
+        return {
+            'is_bubble': None,
+            'alpha': np.nan,
+            'alpha_se': np.nan,
+            'alpha_ci': (np.nan, np.nan),
+            'p_value': np.nan,
+            'n_windows': len(qv_estimates),
+            'diagnostics': {'error': 'Too few valid QV estimates'}
+        }
+
+    # Regress log(QV) ~ α·log(mean_price) + const
+    # For CEV with vol σS^{β/2-1}: QV ~ S^β, so α should ≈ β
+    log_qv = np.log(qv_estimates)
+    log_price = np.log(mean_prices)
+
+    # Add constant for intercept
+    X_reg = np.column_stack([np.ones(len(log_price)), log_price])
+
+    # OLS regression
+    try:
+        beta_hat, residuals, rank, singular = np.linalg.lstsq(X_reg, log_qv, rcond=None)
+        alpha = beta_hat[1]
+
+        # Compute standard error
+        n = len(log_qv)
+        if n > 2:
+            y_pred = X_reg @ beta_hat
+            mse = np.sum((log_qv - y_pred)**2) / (n - 2)
+            XtX_inv = np.linalg.inv(X_reg.T @ X_reg)
+            alpha_se = np.sqrt(mse * XtX_inv[1, 1])
+        else:
+            alpha_se = np.inf
+    except np.linalg.LinAlgError:
+        alpha = np.nan
+        alpha_se = np.nan
+
+    # Compute confidence interval and p-value for one-sided test H0: α ≤ 2
+    if np.isfinite(alpha) and np.isfinite(alpha_se) and alpha_se > 0:
+        z_crit = stats.norm.ppf((1 + confidence_level) / 2)
+        alpha_ci = (alpha - z_crit * alpha_se, alpha + z_crit * alpha_se)
+
+        # One-sided p-value: P(Z > (α - 2) / se)
+        z_stat = (alpha - 2) / alpha_se
+        p_value = 1 - stats.norm.cdf(z_stat)
+
+        # Bubble if lower CI bound > 2 (conservative) or point estimate > 2
+        is_bubble = alpha_ci[0] > 2  # Conservative: reject H0 at confidence level
+    else:
+        alpha_ci = (np.nan, np.nan)
+        p_value = np.nan
+        is_bubble = None
+
+    # Compute R² for diagnostic
+    if np.isfinite(alpha):
+        ss_tot = np.sum((log_qv - np.mean(log_qv))**2)
+        ss_res = np.sum((log_qv - X_reg @ beta_hat)**2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+    else:
+        r_squared = np.nan
+
+    if verbose:
+        print(f"Signature Bubble Test Results:")
+        print(f"  Windows: {len(qv_estimates)}")
+        print(f"  α estimate: {alpha:.3f} ± {alpha_se:.3f}")
+        print(f"  95% CI: ({alpha_ci[0]:.3f}, {alpha_ci[1]:.3f})")
+        print(f"  P-value (H0: α ≤ 2): {p_value:.4f}")
+        print(f"  R²: {r_squared:.3f}")
+        print(f"  Verdict: {'BUBBLE' if is_bubble else 'No bubble detected'}")
+
+    return {
+        'is_bubble': is_bubble,
+        'alpha': alpha,
+        'alpha_se': alpha_se,
+        'alpha_ci': alpha_ci,
+        'p_value': p_value,
+        'n_windows': len(qv_estimates),
+        'diagnostics': {
+            'r_squared': r_squared,
+            'intercept': beta_hat[0] if np.isfinite(alpha) else np.nan,
+            'log_qv': log_qv,
+            'log_mean_prices': log_price,
+            'qv_estimates': qv_estimates,
+            'mean_prices': mean_prices,
+        }
+    }
+
+
+def simulate_cev(T: int = 5000, S0: float = 100, mu: float = 0.05,
+                 sigma: float = 0.2, beta: float = 2.0,
+                 dt: float = 1/252, seed: int = None) -> np.ndarray:
+    """
+    Simulate CEV (Constant Elasticity of Variance) process.
+
+    dS_t = μ·S_t·dt + σ·S_t^{β/2}·dW_t
+
+    Args:
+        T: Number of time steps
+        S0: Initial price
+        mu: Drift coefficient
+        sigma: Volatility coefficient
+        beta: Elasticity parameter
+            - β = 2: GBM (log-normal)
+            - β < 2: Leverage effect (vol increases as price falls)
+            - β > 2: Inverse leverage (vol increases as price rises) — BUBBLE
+        dt: Time step
+        seed: Random seed
+
+    Returns:
+        Array of price values
+
+    Note:
+        β > 2 produces a strict local martingale (bubble) when μ = 0.
+        The process can explode in finite time.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    S = np.zeros(T)
+    S[0] = S0
+
+    sqrt_dt = np.sqrt(dt)
+
+    for t in range(1, T):
+        dW = np.random.randn() * sqrt_dt
+
+        # Euler-Maruyama scheme
+        vol = sigma * S[t-1] ** (beta / 2 - 1)  # σS^{β/2}/S = σS^{β/2-1}
+        S[t] = S[t-1] * (1 + mu * dt + vol * dW)
+
+        # Reflection at zero (prevent negative prices)
+        S[t] = max(S[t], 1e-6)
+
+        # Cap at extreme values (prevent numerical overflow for β > 2)
+        S[t] = min(S[t], 1e10)
+
+    return S
+
+
+def validate_bubble_test(betas: list = None, n_paths: int = 5,
+                         T: int = 5000, verbose: bool = True) -> Dict:
+    """
+    Validate signature bubble test on CEV processes with known β.
+
+    For CEV: dS = μS dt + σS^{β/2} dW
+    - β ≤ 2: No bubble (true martingale under risk-neutral measure)
+    - β > 2: Bubble (strict local martingale)
+
+    The test should estimate α ≈ β since QV ~ S^β.
+
+    Args:
+        betas: List of β values to test (default: [1.5, 2.0, 2.5, 3.0])
+        n_paths: Number of Monte Carlo paths per β
+        T: Length of each path
+        verbose: Print results
+
+    Returns:
+        Dictionary with validation results
+    """
+    if betas is None:
+        betas = [1.5, 2.0, 2.5, 3.0]
+
+    results = {}
+
+    for beta in betas:
+        true_bubble = beta > 2
+        alpha_estimates = []
+        bubble_detections = []
+
+        for seed in range(n_paths):
+            S = simulate_cev(T=T, beta=beta, seed=42 + seed * 100)
+            result = signature_bubble_test(S, verbose=False)
+
+            if result['alpha'] is not None and np.isfinite(result['alpha']):
+                alpha_estimates.append(result['alpha'])
+                if result['is_bubble'] is not None:
+                    bubble_detections.append(result['is_bubble'])
+
+        if alpha_estimates:
+            mean_alpha = np.mean(alpha_estimates)
+            std_alpha = np.std(alpha_estimates)
+            detection_rate = np.mean(bubble_detections) if bubble_detections else np.nan
+        else:
+            mean_alpha = np.nan
+            std_alpha = np.nan
+            detection_rate = np.nan
+
+        results[beta] = {
+            'true_bubble': true_bubble,
+            'mean_alpha': mean_alpha,
+            'std_alpha': std_alpha,
+            'alpha_estimates': alpha_estimates,
+            'detection_rate': detection_rate,
+            'correct_detection': (
+                (detection_rate > 0.5) == true_bubble if np.isfinite(detection_rate) else None
+            )
+        }
+
+        if verbose:
+            status = "BUBBLE" if true_bubble else "NO BUBBLE"
+            detected = f"{detection_rate:.0%}" if np.isfinite(detection_rate) else "N/A"
+            print(f"β={beta:.1f} ({status}): α̂={mean_alpha:.2f}±{std_alpha:.2f}, "
+                  f"detection={detected}")
+
+    return results
+
+
 def find_ergodic_segments(X: np.ndarray, transform: str = 'auto',
                           min_seg_len: int = 126,
                           verbose: bool = False) -> Dict:
@@ -649,6 +971,23 @@ if __name__ == '__main__':
 
     print("=" * 60)
     print("Signature-Based Stationarity Transform Detection")
+    print("=" * 60)
+
+    # NEW: Test bubble detection first
+    print("\n" + "=" * 60)
+    print("BUBBLE DETECTION TEST (Jarrow-Protter Framework)")
+    print("=" * 60)
+    print("\nValidating on CEV processes with known β:")
+    print("  β ≤ 2: No bubble (true martingale)")
+    print("  β > 2: Bubble (strict local martingale)")
+    print("-" * 60)
+    results = validate_bubble_test(betas=[1.5, 2.0, 2.5, 3.0], n_paths=5, T=5000)
+    print("-" * 60)
+
+    # Check if test correctly identifies bubble/no-bubble
+    correct = sum(1 for r in results.values() if r['correct_detection'])
+    total = len(results)
+    print(f"\nSummary: {correct}/{total} β values correctly classified")
     print("=" * 60)
 
     # Test 1: GBM (needs log)

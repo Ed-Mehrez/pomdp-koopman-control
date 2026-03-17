@@ -24,6 +24,21 @@ except ImportError:
     HAS_SIGKERNEL = False
 
 
+def compute_increment_logsignature(dt: float, dx: float, level: int = 2) -> dict:
+    """
+    Compute the direct log-signature of a straight-line path segment.
+    Since it's a straight line, all higher order cross-terms and Lie Brackets 
+    eval to 0. The log-signature of a straight line is just the increment itself.
+    """
+    lsig = {}
+    lsig[1] = np.array([dt, dx])
+    if level >= 2:
+        # For a straight 2D line, the Lévy area (level 2 of log-sig) is exactly 0
+        lsig[2] = 0.0
+    return lsig
+
+
+
 def compute_increment_signature(dt: float, dx: float, level: int = 2) -> dict:
     """
     Compute the signature of a tiny path segment [(0,0), (dt,dx)].
@@ -71,6 +86,38 @@ def signature_tensor_product(S: dict, T: dict, level: int = 2) -> dict:
 
         result[2] = S2 + T2 + np.outer(S1, T1)
 
+    return result
+
+def logsignature_bch_product(L: dict, M: dict, level: int = 2) -> dict:
+    """
+    Compute the log-signature combination using Baker-Campbell-Hausdorff (BCH).
+    
+    L_new = L \u2295 M = L + M + 1/2 [L, M] + ...
+    
+    For a 2D path at level 2:
+    - Level 1: L_1 + M_1
+    - Level 2: L_2 + M_2 + 1/2 [L_1, M_1]
+    
+    where [L_1, M_1] is the Lie Bracket (L_t M_x - L_x M_t), representing Area.
+    """
+    result = {}
+    
+    # Level 1: L_1 + M_1
+    L1 = L.get(1, np.zeros(2))
+    M1 = M.get(1, np.zeros(2))
+    result[1] = L1 + M1
+    
+    if level >= 2:
+        # For 2D, the only independent Lie bracket at Level 2 is the scalar area
+        # 1/2 * (L[t]*M[x] - L[x]*M[t])
+        lie_bracket = 0.5 * (L1[0] * M1[1] - L1[1] * M1[0])
+        
+        L2 = L.get(2, 0.0)
+        M2 = M.get(2, 0.0)
+        
+        # Level 2 update is the sum of previous areas + 1/2 the new cross Area
+        result[2] = L2 + M2 + lie_bracket
+        
     return result
 
 
@@ -260,6 +307,87 @@ class SignatureState:
         k = sig_kernel.compute_Gram(p1, p2, sym=False).item()
         return k
 
+class LogSignatureState:
+    """
+    Maintains a truncated log-signature state updated natively via the 
+    Baker-Campbell-Hausdorff (BCH) formula.
+    
+    KEY ADVANTAGE: Log-signatures map exactly to the free Lie algebra. For a 2D path 
+    at level 2, this requires storing only 3 scalar values: [sig_t, sig_x, Area]
+    compared to the 6 values (or 4 values if symmetric) needed for Chen's identity.
+    
+    BCH update at Level 2:
+    L(path_1 ⊕ path_2) = L_1 + L_2 + 1/2 [L_1, L_2]
+    """
+
+    def __init__(self, level: int = 2):
+        """
+        Args:
+            level: Truncation level for log-signature (memory: O(Lie Group dims))
+        """
+        self.level = level
+        self.L = {1: np.zeros(2)}  # Level 1: [sig_t, sig_x]
+        if level >= 2:
+            self.L[2] = 0.0  # Level 2: scalar Lévy Area for 2D paths
+            
+    def kernel_with(self, other: 'LogSignatureState', kernel_type: str = 'truncated') -> float:
+        """
+        Compute signature kernel by mapping to SignatureState exactly via exp().
+        """
+        S1 = self.to_signature_state()
+        S2 = other.to_signature_state()
+        return S1.kernel_with(S2, kernel_type=kernel_type)
+
+    def reset(self):
+        """Reset log-signature to identity (empty path)."""
+        self.L = {1: np.zeros(2)}
+        if self.level >= 2:
+            self.L[2] = 0.0
+
+    def extend(self, dt: float, dx: float):
+        """
+        Extend log-signature by increment (dt, dx) using BCH.
+        L_new = L_old ⊕ LogSig(increment)
+        """
+        L_incr = compute_increment_logsignature(dt, dx, self.level)
+        self.L = logsignature_bch_product(self.L, L_incr, self.level)
+
+    def to_vector(self) -> np.ndarray:
+        """Convert to flat vector for linear algebra. matches signature_to_vector format [t, x, area]"""
+        l1 = self.L.get(1, np.zeros(2))
+        if self.level == 1:
+            return l1
+        elif self.level == 2:
+            area = self.L.get(2, 0.0)
+            return np.concatenate([l1, [area]])
+        else:
+            raise ValueError(f"Level {self.level} not supported")
+
+    def get_levy_area(self) -> float:
+        """Extract Lévy area."""
+        if self.level >= 2:
+            return self.L.get(2, 0.0)
+        return 0.0
+
+    def to_signature_state(self) -> SignatureState:
+        """
+        Map Log-Signature exactly to a standard SignatureState using exp() map.
+        Sig = exp(LogSig) = 1 + L + 1/2 L^2 + ...
+        """
+        S = SignatureState(level=self.level)
+        
+        # Level 1 matches exactly
+        L1 = self.L.get(1, np.zeros(2))
+        S.S[1] = L1.copy()
+        
+        # Level 2 = L_2_tensor + 1/2 (L_1 ⊗ L_1)
+        if self.level >= 2:
+            area = self.L.get(2, 0.0)
+            # Embedding the Lie bracket back into the tensor space
+            L2_tensor = np.array([[0.0, area], [-area, 0.0]])
+            S.S[2] = L2_tensor + 0.5 * np.outer(L1, L1)
+            
+        return S
 
 def truncated_signature_kernel(S1: SignatureState, S2: SignatureState) -> float:
     """
@@ -314,7 +442,8 @@ class StreamingSigKernelLearner:
                  kernel_type: str = 'truncated',
                  reg_param: float = 1.0,
                  max_budget: int = 500,
-                 mode: str = 'budgeted'):
+                 mode: str = 'budgeted',
+                 use_log_sig: bool = False):
         """
         Args:
             dt: Time step
@@ -324,6 +453,7 @@ class StreamingSigKernelLearner:
             reg_param: Ridge regularization (KRR) or bandwidth scaling (NW)
             max_budget: Maximum number of support points (for budgeted mode)
             mode: 'incremental' (unbounded) or 'budgeted' (fixed size)
+            use_log_sig: Use LogSignatureState (BCH) instead of SignatureState
         """
         self.dt = dt
         self.level = level
@@ -332,6 +462,7 @@ class StreamingSigKernelLearner:
         self.lam = reg_param
         self.max_budget = max_budget
         self.mode = mode
+        self.use_log_sig = use_log_sig
 
         # Whether to store full path (needed for untruncated kernel)
         self.store_path = (kernel_type == 'untruncated')
@@ -357,7 +488,10 @@ class StreamingSigKernelLearner:
         self.x_current = 0.0
 
         # Current cumulative signature
-        self.sig_current = SignatureState(level=level, store_path=self.store_path)
+        if self.use_log_sig:
+            self.sig_current = LogSignatureState(level=level)
+        else:
+            self.sig_current = SignatureState(level=level, store_path=self.store_path)
 
     def reset(self, x0: float = 0.0):
         """Reset learner for new trajectory."""
@@ -368,9 +502,12 @@ class StreamingSigKernelLearner:
         self.x_origin = x0
         self.t = 0.0
         self.x_current = x0
-        self.sig_current = SignatureState(level=self.level, store_path=self.store_path)
-        if self.store_path:
-            self.sig_current.x_history[0] = x0
+        if self.use_log_sig:
+            self.sig_current = LogSignatureState(level=self.level)
+        else:
+            self.sig_current = SignatureState(level=self.level, store_path=self.store_path)
+            if self.store_path:
+                self.sig_current.x_history[0] = x0
 
     def add_observation(self, x_new: float, target: float = None):
         """
@@ -400,19 +537,28 @@ class StreamingSigKernelLearner:
             target = dx / self.dt
 
         # Copy current signature state for dictionary
-        sig_copy = SignatureState(level=self.level, store_path=self.store_path)
-        sig_copy.S = {k: v.copy() for k, v in self.sig_current.S.items()}
-        if self.store_path:
-            sig_copy.t_history = self.sig_current.t_history.copy()
-            sig_copy.x_history = self.sig_current.x_history.copy()
+        if self.use_log_sig:
+            sig_copy = LogSignatureState(level=self.level)
+            sig_copy.L = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in self.sig_current.L.items()}
+        else:
+            sig_copy = SignatureState(level=self.level, store_path=self.store_path)
+            sig_copy.S = {k: v.copy() for k, v in self.sig_current.S.items()}
+            if self.store_path:
+                sig_copy.t_history = self.sig_current.t_history.copy()
+                sig_copy.x_history = self.sig_current.x_history.copy()
 
         # Add to support set
         self.support_points.append((sig_copy, target, x_new))
 
         # Budget management
         if self.mode == 'budgeted' and len(self.support_points) > self.max_budget:
+            # Drop earliest point
             self.support_points.pop(0)
-            self.K = None  # Force recompute
+            if self.K is not None and self.K.shape[0] > 1:
+                # Discard the first row and column of the kernel matrix
+                self.K = self.K[1:, 1:]
+            else:
+                self.K = None
 
         # Update kernel matrix
         self._update_kernel_matrix()
@@ -427,7 +573,7 @@ class StreamingSigKernelLearner:
 
         return prediction, uncertainty
 
-    def _kernel(self, s1: SignatureState, s2: SignatureState) -> float:
+    def _kernel(self, s1, s2) -> float:
         """Compute kernel between two signature states."""
         return s1.kernel_with(s2, kernel_type=self.kernel_type)
 
@@ -440,14 +586,31 @@ class StreamingSigKernelLearner:
             self.alpha = None
             return
 
-        if self.K is None or self.K.shape[0] != n:
-            # Full recompute
+        if self.K is None:
+            # Full recompute (first time or after reset)
             self.K = np.zeros((n, n))
             for i in range(n):
                 for j in range(i, n):
                     k_ij = self._kernel(self.support_points[i][0], self.support_points[j][0])
                     self.K[i, j] = k_ij
                     self.K[j, i] = k_ij
+        elif self.K.shape[0] < n:
+            # Incremental update: append new row & col for the newest point
+            # The newest point is self.support_points[-1]
+            new_K = np.zeros((n, n))
+            old_n = self.K.shape[0]
+            new_K[:old_n, :old_n] = self.K
+            
+            # Compute cross-terms with the new point
+            new_state = self.support_points[-1][0]
+            for i in range(old_n):
+                k_i_new = self._kernel(self.support_points[i][0], new_state)
+                new_K[i, old_n] = k_i_new
+                new_K[old_n, i] = k_i_new
+                
+            # Self-kernel
+            new_K[old_n, old_n] = self._kernel(new_state, new_state)
+            self.K = new_K
 
         if self.method == 'krr':
             # Solve kernel ridge regression
@@ -594,7 +757,7 @@ class StreamingSigKKF:
         # Initialize inverse covariance P for RLS
         self.P = np.eye(self.aug_dim) * initial_lambda
 
-        # Signature state using Chen's identity class
+        # Signature state
         self.sig_state = SignatureState(level=level)
         self.sig_state_prev = SignatureState(level=level)
 
@@ -636,7 +799,7 @@ class StreamingSigKKF:
         # 2. Save previous signature state
         self.sig_state_prev.S = {k: v.copy() for k, v in self.sig_state.S.items()}
 
-        # 3. Update signature state via Chen's identity
+        # 3. Update signature state via Chen's identity / BCH
         self.sig_state.extend(self.dt, dx)
 
         # 4. Get vector representations
@@ -783,6 +946,46 @@ def test_signature_extend():
     assert np.isclose(S[1], expected_sig1_x, rtol=1e-6), "sig1_x mismatch"
     print("  PASSED ✓\n")
 
+
+def test_logsignature_bch():
+    """Test that direct log-signature updates match exp(BCH(L1, L2)) == Chen(exp(L1), exp(L2))"""
+    print("Test: Log-Signature Native Update (BCH Formula)")
+    
+    # 1. Update using standard Chen's identity on Signature Tensors
+    sig_state = SignatureState(level=2)
+    # 2. Update using direct BCH on Log-Signatures
+    lsig_state = LogSignatureState(level=2)
+    
+    increments = [
+        (0.01, 0.1),
+        (0.01, -0.05),
+        (0.01, 0.2),
+        (0.02, 0.3)
+    ]
+    
+    for dt, dx in increments:
+        sig_state.extend(dt, dx)
+        lsig_state.extend(dt, dx)
+        
+    S_vector = sig_state.to_vector()
+    L_vector = lsig_state.to_vector()
+    
+    print(f"  Signature Flattened:    {S_vector}")
+    print(f"  Log-Signature BCH:      {L_vector}")
+    
+    # Check that extracting vector format (which drops symmetric tensors) matches exactly
+    assert np.allclose(S_vector, L_vector, rtol=1e-6), "Log-Signature BCH drift deviated from full Tensor Signature"
+    
+    # Verify exponential map lifting recovers the exact tensor
+    S_recovered = lsig_state.to_signature_state()
+    S_tensor_orig = sig_state.S[2]
+    S_tensor_recov = S_recovered.S[2]
+    
+    print(f"  Sig Tensor:\n{S_tensor_orig}")
+    print(f"  Recovered from LogSig:\n{S_tensor_recov}")
+    assert np.allclose(S_tensor_orig, S_tensor_recov, rtol=1e-6), "Exp map of BCH failed to recover Tensor shape"
+    
+    print("  PASSED ✓\n")
 
 def test_streaming_on_linear_process():
     """Test streaming KKF on simple linear process (sanity check)."""
