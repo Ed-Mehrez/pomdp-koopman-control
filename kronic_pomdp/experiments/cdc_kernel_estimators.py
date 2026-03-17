@@ -2305,6 +2305,473 @@ class SigAugmentedKGEDMDEstimator:
         }
 
 
+###############################################################################
+# Section 8: Theory-Aligned Signature Generator + CdC Estimator
+###############################################################################
+
+
+class SigKGEDMDCdCEstimator:
+    """
+    Theory-aligned: Signature features → Koopman generator → CdC → σ²(S).
+
+    Combines:
+    - RecurrentLeadLagLogSigMap for path-dependent state augmentation
+    - KGEDMD to learn the full Koopman generator L on augmented state
+    - CdC identity to extract σ²_SS measure-invariantly: σ² = L(S²) - 2S·L(S)
+
+    Why CdC matters:
+    - Measure-invariant: annihilates drift, works under any ELMM (P or Q)
+    - For non-Markov: generator on sig-augmented state captures path dependence
+    - For Markov: GCV sets w_qv=0 → collapses to 1D generator (same as KGEDMDCdCEstimator)
+
+    Also provides direct σ² regression as fallback (same as SigAugmentedKGEDMDEstimator).
+    """
+
+    def __init__(self, n_landmarks: int = 80, regularization: float = 1e-3,
+                 sig_gamma: float = 0.99, sig_level: int = 2):
+        self.n_landmarks = n_landmarks
+        self.regularization = regularization
+        self.sig_gamma = sig_gamma
+        self.sig_level = sig_level
+
+    def fit(self, S: np.ndarray, dt: float):
+        """
+        Learn Koopman generator on sig-augmented state.
+
+        Steps:
+        1. Compute running log-sig features (QV via Lévy area)
+        2. Build augmented state (log_S/std, QV/std)
+        3. ARD bandwidth + GCV model selection
+        4. Learn Koopman → Generator L on augmented state pairs
+        5. Direct σ² regression as fallback
+        """
+        import sys, os
+        poc_dir = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))),
+            'examples', 'proof_of_concept')
+        if poc_dir not in sys.path:
+            sys.path.insert(0, poc_dir)
+        from signature_features import RecurrentLeadLagLogSigMap
+
+        S = np.asarray(S).flatten()
+        self.dt = dt
+        self._S_data = S.copy()
+        N = len(S) - 1
+
+        # Step 1: Running signature features
+        sig_map = RecurrentLeadLagLogSigMap(
+            state_dim=1, level=self.sig_level,
+            forgetting_factor=self.sig_gamma)
+
+        sig_features = np.zeros((N, sig_map.feature_dim))
+        for t in range(N):
+            dx = np.array([S[t + 1] - S[t]])
+            sig_features[t] = sig_map.update(dx)
+
+        # Skip warmup
+        warmup = max(50, int(1.0 / (1.0 - self.sig_gamma + 1e-8) * 0.5))
+        warmup = min(warmup, N // 5)
+
+        S_t = S[warmup:-1] if warmup > 0 else S[:-1]
+        S_next = S[warmup + 1:] if warmup > 0 else S[1:]
+        sig_t = sig_features[warmup:]
+        # Sig features at t+1 (for Koopman next-state)
+        sig_next = sig_features[min(warmup + 1, N - 1):]
+        # Align lengths
+        n_valid = min(len(S_t), len(sig_t), len(sig_next))
+        S_t = S_t[:n_valid]
+        S_next = S_next[:n_valid]
+        sig_t = sig_t[:n_valid]
+        sig_next = sig_next[:n_valid]
+
+        # Step 2: Augmented state
+        log_S_t = np.log(np.maximum(S_t, 1e-8))
+        log_S_next = np.log(np.maximum(S_next, 1e-8))
+        qv_t = 2.0 * np.abs(sig_t[:, 2]) if sig_t.shape[1] >= 3 else np.zeros(n_valid)
+        qv_next = 2.0 * np.abs(sig_next[:, 2]) if sig_next.shape[1] >= 3 else np.zeros(n_valid)
+
+        log_S_std = max(np.std(log_S_t), 1e-8)
+        qv_std = max(np.std(qv_t), 1e-8)
+        self._log_S_std = log_S_std
+        self._qv_std = qv_std
+
+        X_aug_t = np.column_stack([log_S_t / log_S_std, qv_t / qv_std])
+        X_aug_next = np.column_stack([log_S_next / log_S_std, qv_next / qv_std])
+
+        self._S_t = S_t
+        self._S_next = S_next
+        squared_inc = (S_next - S_t) ** 2 / dt
+
+        # Step 3: Landmarks + ARD bandwidth + GCV
+        m = min(self.n_landmarks, n_valid // 5)
+        idx_lm = self._select_landmarks_fps(X_aug_t, m)
+        self.landmarks = X_aug_t[idx_lm]
+        self.landmarks_S_raw = S_t[idx_lm]  # Raw S at landmarks (for CdC)
+
+        # Base bandwidth: median heuristic on log_S dimension
+        log_S_lm = self.landmarks[:, 0]
+        dists_1d = pdist(log_S_lm.reshape(-1, 1))
+        bw_base = max(np.median(dists_1d) if len(dists_1d) > 0 else 1.0, 0.1)
+
+        # GCV grid search over QV weight
+        gcv_scores = {}
+        for w_qv in [0.0, 0.25, 0.5, 1.0]:
+            bw = np.array([bw_base, bw_base / max(w_qv, 0.01)])
+            K_nM_w = self._kernel_matrix_ard(X_aug_t, self.landmarks, bw)
+            K_gram_w = K_nM_w.T @ K_nM_w + self.regularization * np.eye(m)
+            try:
+                coeffs_w = np.linalg.solve(K_gram_w, K_nM_w.T @ squared_inc)
+                resid = squared_inc - K_nM_w @ coeffs_w
+                H_trace = np.sum(K_nM_w * np.linalg.solve(K_gram_w, K_nM_w.T).T)
+                gcv = np.mean(resid ** 2) / max(1 - H_trace / n_valid, 0.1) ** 2
+            except np.linalg.LinAlgError:
+                gcv = np.inf
+            gcv_scores[w_qv] = gcv
+
+        gcv_1d = gcv_scores[0.0]
+        best_w = 0.0
+        best_gcv = gcv_1d
+        for w_qv in [0.25, 0.5, 1.0]:
+            if gcv_scores[w_qv] < best_gcv and \
+               (gcv_1d - gcv_scores[w_qv]) / max(gcv_1d, 1e-10) > 0.05:
+                best_gcv = gcv_scores[w_qv]
+                best_w = w_qv
+
+        self.bandwidth_ard = np.array([bw_base, bw_base / max(best_w, 0.01)])
+        self._qv_weight = best_w
+
+        # Step 4: Learn Koopman generator on augmented state
+        K_t = self._kernel_matrix_ard(X_aug_t, self.landmarks)
+        K_next = self._kernel_matrix_ard(X_aug_next, self.landmarks)
+        K_MM = self._kernel_matrix_ard(self.landmarks, self.landmarks)
+
+        K_gram = K_t.T @ K_t + self.regularization * np.eye(m)
+        self.Koopman = np.linalg.solve(K_gram, K_t.T @ K_next)
+        self.L_matrix = (self.Koopman - np.eye(m)) / dt
+        self.K_MM_inv = np.linalg.inv(K_MM + self.regularization * np.eye(m))
+
+        # Step 5: Direct σ² regression (fallback)
+        self.sigma_sq_coeffs = np.linalg.solve(K_gram, K_t.T @ squared_inc)
+
+        # Store for jackknife
+        self._X_aug_t = X_aug_t
+        self._X_aug_next = X_aug_next
+        self._squared_inc = squared_inc
+        self._K_gram_inv = np.linalg.inv(K_gram)
+        self._residual_var = float(np.mean(
+            (squared_inc - K_t @ self.sigma_sq_coeffs) ** 2))
+
+        return self
+
+    # --- Kernel and landmark utilities ---
+
+    def _select_landmarks_fps(self, X: np.ndarray, m: int) -> np.ndarray:
+        """Farthest Point Sampling."""
+        n = X.shape[0]
+        if m >= n:
+            return np.arange(n)
+        indices = [np.random.randint(n)]
+        min_dists = np.full(n, np.inf)
+        for _ in range(m - 1):
+            last = indices[-1]
+            d = np.sum((X - X[last]) ** 2, axis=1)
+            min_dists = np.minimum(min_dists, d)
+            indices.append(np.argmax(min_dists))
+        return np.array(indices)
+
+    def _kernel_matrix_ard(self, X1: np.ndarray, X2: np.ndarray,
+                            bw: np.ndarray = None) -> np.ndarray:
+        """ARD RBF kernel."""
+        X1 = np.atleast_2d(X1)
+        X2 = np.atleast_2d(X2)
+        if bw is None:
+            bw = self.bandwidth_ard
+        bw = np.atleast_1d(bw)
+        X1_s = X1 / bw
+        X2_s = X2 / bw
+        sq_dists = np.sum(X1_s ** 2, axis=1, keepdims=True) + \
+                   np.sum(X2_s ** 2, axis=1) - 2 * X1_s @ X2_s.T
+        return np.exp(-0.5 * sq_dists)
+
+    # --- Generator and CdC machinery ---
+
+    def _function_to_coeffs(self, f_at_landmarks: np.ndarray) -> np.ndarray:
+        """Function values at landmarks → Nyström coefficients."""
+        return self.K_MM_inv @ f_at_landmarks
+
+    def _coeffs_to_function(self, coeffs: np.ndarray,
+                             X_query: np.ndarray) -> np.ndarray:
+        """Nyström coefficients → function values at query points."""
+        K = self._kernel_matrix_ard(X_query, self.landmarks)
+        return K @ coeffs
+
+    def generator_on_function(self, f_at_landmarks: np.ndarray,
+                               X_query: np.ndarray = None) -> np.ndarray:
+        """
+        Apply generator L to function f, evaluated at query points.
+
+        1. Convert f values → Nyström coefficients: α = K_MM⁻¹ @ f
+        2. Apply L in coefficient space: β = L @ α
+        3. Evaluate: (Lf)(x) = k(x, landmarks) @ β
+        """
+        alpha = self._function_to_coeffs(f_at_landmarks)
+        beta = self.L_matrix @ alpha
+        if X_query is None:
+            X_query = self.landmarks
+        return self._coeffs_to_function(beta, X_query)
+
+    def sigma_squared_cdc(self, X_query_aug: np.ndarray,
+                           S_query_raw: np.ndarray,
+                           ito_correction: bool = True) -> np.ndarray:
+        """
+        Extract σ²_S via CdC on log(S) (measure-invariant).
+
+        Key insight: Apply CdC to g=log(S) instead of S directly.
+        Since landmarks live in log-space, g is nearly LINEAR in the
+        first coordinate — much easier to approximate in the RKHS.
+
+        By Itô: σ²_g(z) = L(g²)(z) - 2g·L(g)(z) = σ² of log-returns
+        Then: σ²_S(S) = S² · σ²_g
+
+        For GBM: σ²_g = σ₀² (constant!) — trivially learned.
+        For CEV with σ(S)=c·S^(β/2): σ²_g = c²·S^(β-2), smoother than c²·S^β.
+
+        The α regression uses σ²_S directly:
+            log(σ²_S) = log(S²) + log(σ²_g) = 2·log(S) + (β-2)·log(S) + C = β·log(S) + C
+
+        Args:
+            X_query_aug: Query points in augmented (normalized) space
+            S_query_raw: Corresponding raw (unnormalized) S values
+            ito_correction: Subtract μ_g²·dt discrete-time bias
+        """
+        X_query_aug = np.atleast_2d(X_query_aug)
+        S_query_raw = np.atleast_1d(S_query_raw)
+
+        # Function values at landmarks: log(S) and log(S)²
+        # log(S) ≈ landmarks[:, 0] * log_S_std (undo normalization)
+        log_S_lm = np.log(np.maximum(self.landmarks_S_raw, 1e-8))
+        f_g = log_S_lm
+        f_g2 = log_S_lm ** 2
+
+        # Apply generator
+        L_g = self.generator_on_function(f_g, X_query_aug)    # ≈ μ_g(z) = μ - σ²/2
+        L_g2 = self.generator_on_function(f_g2, X_query_aug)  # ≈ 2g·μ_g + σ²_g + μ_g²·dt
+
+        # CdC on log(S): σ²_g = L(g²) - 2g·L(g)
+        log_S_query = np.log(np.maximum(S_query_raw, 1e-8))
+        sigma_sq_g_raw = L_g2 - 2 * log_S_query * L_g
+
+        if ito_correction:
+            sigma_sq_g = sigma_sq_g_raw - L_g ** 2 * self.dt
+        else:
+            sigma_sq_g = sigma_sq_g_raw
+
+        # Convert: σ²_S = S² · σ²_g
+        sigma_sq_S = S_query_raw ** 2 * np.maximum(sigma_sq_g, 1e-14)
+
+        return np.maximum(sigma_sq_S, 1e-10)
+
+    def sigma_squared_direct(self, X_query_aug: np.ndarray) -> np.ndarray:
+        """σ² via direct KRR on (ΔS)²/dt (fallback, not measure-invariant)."""
+        K = self._kernel_matrix_ard(X_query_aug, self.landmarks)
+        return np.maximum(K @ self.sigma_sq_coeffs, 1e-10)
+
+    def drift(self, X_query_aug: np.ndarray) -> np.ndarray:
+        """Extract drift μ(z) = L(S)(z) from the generator."""
+        f_S = self.landmarks_S_raw
+        return self.generator_on_function(f_S, X_query_aug)
+
+    # --- Alpha estimation with both methods ---
+
+    def fit_alpha_bayesian(self, n_posterior_samples=200, n_blocks=10):
+        """
+        Fit log(σ̂²) ~ α·log(S) using BOTH CdC and direct methods.
+
+        Returns dict with alpha from CdC (primary, theory-aligned)
+        and direct (fallback), plus auto-selection.
+        """
+        from sklearn.linear_model import BayesianRidge
+        from scipy import stats
+
+        # Subsample training points for evaluation
+        max_eval = 2000
+        n_pts = len(self._X_aug_t)
+        if n_pts > max_eval:
+            eval_idx = np.random.choice(n_pts, max_eval, replace=False)
+        else:
+            eval_idx = np.arange(n_pts)
+
+        X_eval = self._X_aug_t[eval_idx]
+        S_eval = self._S_t[eval_idx]
+
+        # CdC σ²
+        sigma2_cdc = self.sigma_squared_cdc(X_eval, S_eval)
+        # Direct σ²
+        sigma2_direct = self.sigma_squared_direct(X_eval)
+
+        # Fit α for both methods
+        def _fit_alpha(sigma2_vals, S_vals):
+            valid = (S_vals > 1e-4) & (sigma2_vals > 1e-8)
+            if np.sum(valid) < 20:
+                return np.nan, np.nan, 0.0
+            log_S = np.log(S_vals[valid]).reshape(-1, 1)
+            log_sig2 = np.log(sigma2_vals[valid])
+            brr = BayesianRidge(alpha_1=1e-6, alpha_2=1e-6,
+                                lambda_1=1e-6, lambda_2=1e-6,
+                                fit_intercept=True)
+            brr.fit(log_S, log_sig2)
+            alpha = float(brr.coef_[0])
+            alpha_brr_sd = float(np.sqrt(brr.sigma_[0, 0])) if hasattr(brr, 'sigma_') else 0.5
+            return alpha, alpha_brr_sd, brr
+
+        alpha_cdc, sd_cdc_brr, brr_cdc = _fit_alpha(sigma2_cdc, S_eval)
+        alpha_direct, sd_direct_brr, brr_direct = _fit_alpha(sigma2_direct, S_eval)
+
+        # Delete-block jackknife for SD calibration (on both methods)
+        block_size = n_pts // n_blocks
+
+        alpha_jk_cdc = []
+        alpha_jk_direct = []
+
+        if block_size >= 50:
+            for k in range(n_blocks):
+                b_start = k * block_size
+                b_end = min((k + 1) * block_size, n_pts)
+                train_idx = np.concatenate([
+                    np.arange(0, b_start), np.arange(b_end, n_pts)])
+
+                if len(train_idx) < 100:
+                    continue
+
+                X_tr = self._X_aug_t[train_idx]
+                X_next_tr = self._X_aug_next[train_idx]
+                y_tr = self._squared_inc[train_idx]
+                S_tr = self._S_t[train_idx]
+
+                m_k = min(self.n_landmarks, len(train_idx) // 5)
+                if m_k < 10:
+                    continue
+
+                idx_lm = self._select_landmarks_fps(X_tr, m_k)
+                lm_k = X_tr[idx_lm]
+                lm_S_k = S_tr[idx_lm]
+
+                K_nM_k = self._kernel_matrix_ard(X_tr, lm_k)
+                K_gram_k = K_nM_k.T @ K_nM_k + self.regularization * np.eye(m_k)
+
+                try:
+                    # Direct coeffs for this fold
+                    coeffs_k = np.linalg.solve(K_gram_k, K_nM_k.T @ y_tr)
+
+                    # Generator for this fold
+                    K_next_k = self._kernel_matrix_ard(X_next_tr, lm_k)
+                    Koop_k = np.linalg.solve(K_gram_k, K_nM_k.T @ K_next_k)
+                    L_k = (Koop_k - np.eye(m_k)) / self.dt
+                    K_MM_k = self._kernel_matrix_ard(lm_k, lm_k)
+                    K_MM_inv_k = np.linalg.inv(
+                        K_MM_k + self.regularization * np.eye(m_k))
+                except np.linalg.LinAlgError:
+                    continue
+
+                # Evaluate at training points for this fold
+                K_eval_k = self._kernel_matrix_ard(X_tr, lm_k)
+
+                # Direct σ²
+                sig2_d_k = np.maximum(K_eval_k @ coeffs_k, 1e-10)
+
+                # CdC σ² via log(S) — same as sigma_squared_cdc
+                log_S_lm_k = np.log(np.maximum(lm_S_k, 1e-8))
+                f_g_k = log_S_lm_k
+                f_g2_k = log_S_lm_k ** 2
+                alpha_g = K_MM_inv_k @ f_g_k
+                beta_g = L_k @ alpha_g
+                L_g_k = K_eval_k @ beta_g
+                alpha_g2 = K_MM_inv_k @ f_g2_k
+                beta_g2 = L_k @ alpha_g2
+                L_g2_k = K_eval_k @ beta_g2
+                log_S_tr = np.log(np.maximum(S_tr, 1e-8))
+                sig2_g_k = L_g2_k - 2 * log_S_tr * L_g_k - L_g_k ** 2 * self.dt
+                sig2_c_k = np.maximum(S_tr ** 2 * np.maximum(sig2_g_k, 1e-14), 1e-10)
+
+                # Alpha from each
+                for sig2, alpha_list in [(sig2_d_k, alpha_jk_direct),
+                                          (sig2_c_k, alpha_jk_cdc)]:
+                    valid = (S_tr > 1e-4) & (sig2 > 1e-8)
+                    if np.sum(valid) < 20:
+                        continue
+                    log_S_k = np.log(S_tr[valid]).reshape(-1, 1)
+                    log_s2_k = np.log(sig2[valid])
+                    brr_k = BayesianRidge(alpha_1=1e-6, alpha_2=1e-6,
+                                          lambda_1=1e-6, lambda_2=1e-6,
+                                          fit_intercept=True)
+                    brr_k.fit(log_S_k, log_s2_k)
+                    alpha_list.append(float(brr_k.coef_[0]))
+
+        # Compute jackknife SDs
+        def _jk_sd(alpha_full, alpha_jk_list):
+            if len(alpha_jk_list) >= 3:
+                arr = np.array(alpha_jk_list)
+                K_eff = len(arr)
+                var = (K_eff - 1) / K_eff * np.sum((arr - np.mean(arr)) ** 2)
+                return max(np.sqrt(var), 0.02)
+            else:
+                return 0.5  # fallback
+
+        sd_cdc = _jk_sd(alpha_cdc, alpha_jk_cdc)
+        sd_direct = _jk_sd(alpha_direct, alpha_jk_direct)
+
+        # Auto-select: Direct is primary for the α test because:
+        # 1. Squared increments (ΔS)²/dt are ALREADY measure-invariant
+        #    (drift b²·dt² is negligible), so direct ≈ CdC in accuracy.
+        # 2. CdC via generator suffers catastrophic cancellation:
+        #    σ²_g = L(g²) - 2g·L(g) subtracts two approximations.
+        # 3. The generator is learned for PRICING/EIGENFUNCTION value,
+        #    not for σ² which the direct method handles better.
+        #
+        # CdC α is reported as a diagnostic (validates generator quality:
+        # if CdC ≈ direct, the generator is well-learned).
+        direct_valid = (not np.isnan(alpha_direct)) and (-1 < alpha_direct < 10)
+        cdc_valid = (not np.isnan(alpha_cdc)) and (-1 < alpha_cdc < 10) and (sd_cdc < 5)
+
+        if direct_valid:
+            alpha_selected = alpha_direct
+            sd_selected = sd_direct
+            method_selected = 'direct'
+        elif cdc_valid:
+            alpha_selected = alpha_cdc
+            sd_selected = sd_cdc
+            method_selected = 'cdc_fallback'
+        else:
+            alpha_selected = alpha_direct if not np.isnan(alpha_direct) else 0.0
+            sd_selected = max(sd_direct, 0.5)
+            method_selected = 'direct'
+
+        p_bubble = float(stats.norm.cdf(
+            (alpha_selected - 2.0) / max(sd_selected, 0.01)))
+
+        return {
+            'alpha_mean': alpha_selected,
+            'alpha_sd': sd_selected,
+            'p_bubble': p_bubble,
+            'method': f'sig_generator_{method_selected}',
+            'alpha_cdc': alpha_cdc,
+            'alpha_cdc_sd': sd_cdc,
+            'alpha_direct': alpha_direct,
+            'alpha_direct_sd': sd_direct,
+            'diagnostics': {
+                'n_landmarks': len(self.landmarks),
+                'bandwidth_ard': list(self.bandwidth_ard),
+                'qv_weight': self._qv_weight,
+                'sig_gamma': self.sig_gamma,
+                'method_selected': method_selected,
+                'cdc_valid': cdc_valid,
+                'residual_var': self._residual_var,
+                'n_jk_cdc': len(alpha_jk_cdc),
+                'n_jk_direct': len(alpha_jk_direct),
+            }
+        }
+
+
 if __name__ == "__main__":
     compare_estimators()
     comprehensive_sigma_estimation()

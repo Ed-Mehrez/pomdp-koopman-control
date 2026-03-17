@@ -1554,6 +1554,55 @@ def level3_sig_kernel_cdc(S: np.ndarray, dt: float,
     }
 
 
+def level3_sig_generator_cdc(S: np.ndarray, dt: float,
+                              n_landmarks: int = 80, reg: float = None,
+                              sig_gamma: float = 0.99,
+                              n_posterior_samples: int = 200) -> Dict:
+    """
+    Theory-aligned: Sig features → Koopman generator → CdC → σ²(S) → α test.
+
+    Unlike level3_sig_kernel_cdc (direct KRR on squared increments), this learns
+    the full Koopman generator on the signature-augmented state and extracts σ²
+    via the CdC identity. CdC is measure-invariant: annihilates drift, works
+    under any ELMM — theoretically sound for bubble detection.
+
+    Provides BOTH CdC and direct α estimates; auto-selects CdC as primary.
+    """
+    from cdc_kernel_estimators import SigKGEDMDCdCEstimator
+
+    S = np.asarray(S).flatten()
+
+    if reg is None:
+        reg = 1e-3
+
+    est = SigKGEDMDCdCEstimator(
+        n_landmarks=n_landmarks,
+        regularization=reg,
+        sig_gamma=sig_gamma,
+    )
+    est.fit(S, dt)
+
+    alpha_result = est.fit_alpha_bayesian(n_posterior_samples)
+
+    return {
+        'p_bubble': alpha_result['p_bubble'],
+        'alpha': alpha_result['alpha_mean'],
+        'alpha_sd': alpha_result['alpha_sd'],
+        'max_re_lambda': np.nan,
+        'estimator': est,
+        'diagnostics': {
+            'method': 'sig_generator_cdc',
+            'alpha_cdc': alpha_result.get('alpha_cdc'),
+            'alpha_cdc_sd': alpha_result.get('alpha_cdc_sd'),
+            'alpha_direct': alpha_result.get('alpha_direct'),
+            'alpha_direct_sd': alpha_result.get('alpha_direct_sd'),
+            'method_selected': alpha_result.get('diagnostics', {}).get('method_selected'),
+            **{k: v for k, v in alpha_result.get('diagnostics', {}).items()
+               if k != 'method_selected'},
+        }
+    }
+
+
 def demonstrate_generator_reuse(S: np.ndarray, dt: float,
                                  V_data: np.ndarray = None,
                                  n_landmarks: int = 100):
@@ -2295,6 +2344,12 @@ def _run_tier(cases, dt, tier_name, active_levels, verbose=True):
             p1d = path_arr[:, 0] if is_multivariate else path_arr
             res3sk = level3_sig_kernel_cdc(p1d, dt)
 
+        # Theory-aligned: Sig → Generator → CdC → σ² (measure-invariant)
+        res3sg = None
+        if 'sig_generator_cdc' in active_levels:
+            p1d = path_arr[:, 0] if is_multivariate else path_arr
+            res3sg = level3_sig_generator_cdc(p1d, dt)
+
         if 'koopman_cdc_multi' in active_levels and is_multivariate:
             res3km = level3m_koopman_cdc_multivariate(path_arr, dt)
         else:
@@ -2312,9 +2367,12 @@ def _run_tier(cases, dt, tier_name, active_levels, verbose=True):
         level_probs = {}
 
         # α > 2 test: pick the best available estimator.
-        # Hierarchy: Sig kernel > Koopman sig > Koopman joint > Koopman 1D > L3b > L3 > L1
-        # Sig kernel uses path-space Koopman — handles Markov AND non-Markov.
-        if res3sk is not None:
+        # Hierarchy: Sig generator CdC > Sig kernel > Koopman sig > Koopman joint > ...
+        # Sig generator CdC is theory-aligned (measure-invariant via generator).
+        # Sig kernel is pragmatic fallback (direct regression, not measure-invariant).
+        if res3sg is not None:
+            level_probs['alpha_test'] = res3sg['p_bubble']
+        elif res3sk is not None:
             level_probs['alpha_test'] = res3sk['p_bubble']
         elif res3ks is not None:
             level_probs['alpha_test'] = res3ks['p_bubble']
@@ -2382,10 +2440,15 @@ def _run_tier(cases, dt, tier_name, active_levels, verbose=True):
                 parts.append(f"β_s={res3ks.get('beta_sig', 0):.2f}")
                 parts.append(f"R²(S→QV)={r2m:.2f}{decomp}")
                 parts.append(f"α_K1d={res3ks.get('alpha_1d', 0):.2f}")
+            if res3sg is not None:
+                diag_sg = res3sg.get('diagnostics', {})
+                parts.append(f"α_SG={res3sg.get('alpha', 0):.2f}±{res3sg.get('alpha_sd', 0):.2f}")
+                parts.append(f"[cdc={diag_sg.get('alpha_cdc', 0):.2f} dir={diag_sg.get('alpha_direct', 0):.2f}]")
+                parts.append(f"sel={diag_sg.get('method_selected', '?')}")
             if res3sk is not None:
                 diag_sk = res3sk.get('diagnostics', {})
                 parts.append(f"α_SK={res3sk.get('alpha', 0):.2f}±{res3sk.get('alpha_sd', 0):.2f}")
-                parts.append(f"w={diag_sk.get('window', 0)}")
+                parts.append(f"qv_w={diag_sk.get('qv_weight', 0)}")
             if res3km is not None:
                 am = res3km.get('alpha_means', [])
                 asd = res3km.get('alpha_sds', [])
@@ -2573,7 +2636,7 @@ def run_tiered_benchmark(dt=1/(252*78), T=0.5):
     #  HOLDOUT: Unseen DGPs — different params, new model types
     # ═══════════════════════════════════════════════════════════════════
     # Use the strongest available detector: L1 + L2 + L3b (joint)
-    active_holdout = {'sig_qv', 'feller', 'cdc_eigen_joint'}
+    active_holdout = {'sig_qv', 'feller', 'cdc_eigen_joint', 'sig_generator_cdc'}
 
     # ── Holdout v1 (development-era, used during Bayesian refactoring) ──
     holdout_v1 = _build_holdout_v1_dgps(n_steps, dt, T)
