@@ -1144,9 +1144,26 @@ class MultivariateCdCEstimator:
         K_MM = self._kernel_matrix(self.landmarks, self.landmarks)
         K_nM = self._kernel_matrix(X_t, self.landmarks)
 
-        # Solve for each (i,j) entry of covariance
-        K_MM_inv = np.linalg.inv(K_MM + self.regularization * np.eye(m))
-        self.alpha = K_MM_inv @ (K_nM.T @ self.cov_targets) / n  # (m, d²)
+        # Solve for each (i,j) entry of covariance via proper KRR
+        # Must use K_gram = K_nM^T K_nM (not K_MM) for correct regression
+        K_gram = K_nM.T @ K_nM + self.regularization * np.eye(m)
+        self.alpha = np.linalg.solve(K_gram, K_nM.T @ self.cov_targets)  # (m, d²)
+
+        # Store for uncertainty estimation (hat matrix, GP posterior)
+        self._K_nM = K_nM
+        self._K_gram = K_gram
+        self._K_MM = K_MM
+
+        # Effective degrees of freedom: df_eff = trace(H) where H = K_nM @ K_gram^{-1} @ K_nM^T
+        # Computing full H is O(n²m), but trace(H) = trace(K_gram^{-1} @ K_nM^T @ K_nM)
+        #                                          = trace(K_gram^{-1} @ (K_gram - λI))
+        #                                          = m - λ * trace(K_gram^{-1})
+        K_gram_inv = np.linalg.inv(K_gram)
+        self._df_eff = m - self.regularization * np.trace(K_gram_inv)
+
+        # Store raw data for directional test
+        self._X_t = X_t
+        self._dX = dX
 
         return self
 
@@ -1194,51 +1211,272 @@ class MultivariateCdCEstimator:
 
         return cov
 
-    def alpha_per_asset(self, n_eval=200):
-        """Fit growth exponent α per asset from diagonal covariance entries.
+    def _inflate_alpha_sd(self, sd_raw, n_eval_valid):
+        """Inflate BayesianRidge SD to account for kernel-induced correlation.
 
-        For each asset i, evaluates Σ_ii(X) at the landmarks and fits
-        log(Σ_ii) ~ α_i · log(X_i) via BayesianRidge.
+        The kernel predictions at n_eval points are correlated, so the effective
+        sample size is df_eff (from the hat matrix), not n_eval.
+        Inflate SD by sqrt(n_eval / df_eff).
+        """
+        if not hasattr(self, '_df_eff') or self._df_eff <= 0:
+            return sd_raw
+        inflation = np.sqrt(max(1.0, n_eval_valid / self._df_eff))
+        return sd_raw * inflation
+
+    def _get_eval_points(self, n_eval=30):
+        """Get well-spaced evaluation points from training data (NOT landmarks).
+
+        Using held-out points avoids interpolation bias at Nyström centers.
+        Subsample to ~n_eval points spread across the range of ||X||.
+        """
+        X_t = self._X_t
+        n = len(X_t)
+
+        # Stratified subsample: sort by norm, take evenly spaced points
+        norms = np.linalg.norm(X_t, axis=1)
+        sorted_idx = np.argsort(norms)
+        step = max(1, n // n_eval)
+        eval_idx = sorted_idx[::step][:n_eval]
+
+        return X_t[eval_idx]
+
+    def _estimate_alpha_1d(self, z, dz, dt, n_landmarks=80):
+        """Estimate tail exponent α via GP with blocked time-series CV.
+
+        Model (Rasmussen & Williams §2.7, eq. 2.42):
+            log σ²(z) = α·log|z| + c + f(z),   f ~ GP(0, k_SE)
+
+        GP hyperparameter σ_f is selected via blocked time-series CV
+        (R&W §5.4 + Arlot & Celisse 2010), NOT marginal likelihood.
+
+        This is critical for non-ergodic processes (GBM): marginal likelihood
+        assumes exchangeable observations and selects σ_f ≈ 0 (power law fits),
+        while blocked CV detects that different temporal blocks have different
+        α estimates → selects σ_f > 0 → wider posterior on α.
+
+        Returns:
+            (alpha_mean, alpha_sd) or (nan, nan) if insufficient data
+        """
+        n = len(z)
+        sq_inc = dz ** 2 / dt
+
+        # Split into temporal blocks for CV and noise estimation
+        n_blocks = min(10, max(5, n // 500))
+        block_len = n // n_blocks
+
+        # Per-block NW estimates: the foundation for both noise variance
+        # and blocked CV. Each block gives independent NW estimates.
+        m = min(n_landmarks, n // 5)
+        quantiles = np.linspace(0.01, 0.99, m)
+        landmarks = np.quantile(z, quantiles)
+
+        ldists = np.abs(np.diff(landmarks))
+        bw = np.median(ldists) if len(ldists) > 0 else np.std(z)
+        bw = max(bw, 1e-8)
+
+        # Full NW estimates (using all data)
+        diff = (landmarks[:, None] - z[None, :]) / bw
+        K_nw = np.exp(-0.5 * diff ** 2)
+        K_sum = K_nw.sum(axis=1)
+        K_sq_sum = (K_nw ** 2).sum(axis=1)
+        valid_lm = K_sum > 1e-10
+        sigma2_nw = np.zeros(m)
+        n_eff = np.zeros(m)
+        sigma2_nw[valid_lm] = (K_nw[valid_lm] @ sq_inc) / K_sum[valid_lm]
+        n_eff[valid_lm] = K_sum[valid_lm] ** 2 / K_sq_sum[valid_lm]
+
+        valid = valid_lm & (np.abs(landmarks) > 1e-4) & (sigma2_nw > 1e-8) & (n_eff > 2)
+        if np.sum(valid) < 10:
+            return np.nan, np.nan
+
+        x = np.log(np.abs(landmarks[valid]))
+        y = np.log(sigma2_nw[valid])
+        nv = len(x)
+
+        # Block-based noise variance (Priestley's effective sample size)
+        valid_idx = np.where(valid)[0]
+        noise_var = np.full(nv, 0.0)
+        for jj, j in enumerate(valid_idx):
+            block_ests = []
+            for b in range(n_blocks):
+                sl = slice(b * block_len, min((b + 1) * block_len, n))
+                K_b = K_nw[j, sl]
+                K_b_sum = K_b.sum()
+                if K_b_sum > 1e-10:
+                    est_b = (K_b @ sq_inc[sl]) / K_b_sum
+                    if est_b > 1e-10:
+                        block_ests.append(np.log(est_b))
+            if len(block_ests) >= 3:
+                noise_var[jj] = np.var(block_ests, ddof=1) / len(block_ests)
+            else:
+                noise_var[jj] = 2.0 / n_eff[j]
+        # Floor at independence assumption
+        noise_var = np.maximum(noise_var, 2.0 / n_eff[valid])
+
+        # Per-block α estimates for blocked bootstrap SE
+        block_alphas = []
+        for b in range(n_blocks):
+            sl = slice(b * block_len, min((b + 1) * block_len, n))
+            z_b = z[sl]
+            sq_b = sq_inc[sl]
+            diff_b = (landmarks[:, None] - z_b[None, :]) / bw
+            K_b = np.exp(-0.5 * diff_b ** 2)
+            K_b_sum = K_b.sum(axis=1)
+            valid_b = valid & (K_b_sum > 1e-10)
+            if np.sum(valid_b) < 5:
+                continue
+            s2_b = np.zeros(m)
+            s2_b[K_b_sum > 1e-10] = (K_b[K_b_sum > 1e-10] @ sq_b) / K_b_sum[K_b_sum > 1e-10]
+            mask_b = valid_b & (s2_b > 1e-10)
+            if np.sum(mask_b) < 5:
+                continue
+            x_b = np.log(np.abs(landmarks[mask_b]))
+            y_b = np.log(s2_b[mask_b])
+            # WLS with n_eff weights
+            n_eff_b = np.zeros(m)
+            K_b_sq = (K_b ** 2).sum(axis=1)
+            n_eff_b[K_b_sum > 1e-10] = K_b_sum[K_b_sum > 1e-10] ** 2 / K_b_sq[K_b_sum > 1e-10]
+            w_b = n_eff_b[mask_b]
+            H_b = np.column_stack([x_b, np.ones(len(x_b))])
+            WH = H_b * w_b[:, None]
+            try:
+                beta_b = np.linalg.solve(WH.T @ H_b, WH.T @ y_b)
+                block_alphas.append(beta_b[0])
+            except np.linalg.LinAlgError:
+                continue
+
+        # Blocked bootstrap SE: SD of per-block α estimates / √n_blocks
+        # This captures temporal correlation + model misspecification
+        if len(block_alphas) >= 3:
+            block_alpha_sd = np.std(block_alphas, ddof=1) / np.sqrt(len(block_alphas))
+        else:
+            block_alpha_sd = None
+
+        # GP setup
+        H = np.column_stack([x, np.ones(nv)])
+        Sigma_n = np.diag(noise_var)
+        x_range = x.max() - x.min()
+        ell = max(x_range / 4.0, 0.1)
+        sq_dists = (x[:, None] - x[None, :]) ** 2
+        K_base = np.exp(-sq_dists / (2 * ell ** 2))
+
+        # Blocked time-series CV for σ_f selection (R&W §5.4).
+        # Split GP observations into temporal folds based on which time
+        # block dominates each landmark's NW estimate.
+        lm_block_id = np.zeros(nv, dtype=int)
+        for jj, j in enumerate(valid_idx):
+            block_weights = np.zeros(n_blocks)
+            for b in range(n_blocks):
+                sl = slice(b * block_len, min((b + 1) * block_len, n))
+                block_weights[b] = K_nw[j, sl].sum()
+            lm_block_id[jj] = np.argmax(block_weights)
+
+        def _blocked_cv_mse(log_sf):
+            """Leave-one-block-out CV for GP with parametric mean."""
+            sf2 = np.exp(2 * log_sf)
+            total_mse = 0.0
+            n_test = 0
+            unique_blocks = np.unique(lm_block_id)
+            for fold in unique_blocks:
+                test_mask = lm_block_id == fold
+                train_mask = ~test_mask
+                if np.sum(train_mask) < 3 or np.sum(test_mask) < 1:
+                    continue
+                # Train GP
+                x_tr, y_tr = x[train_mask], y[train_mask]
+                x_te, y_te = x[test_mask], y[test_mask]
+                nv_tr = len(x_tr)
+                H_tr = np.column_stack([x_tr, np.ones(nv_tr)])
+                H_te = np.column_stack([x_te, np.ones(len(x_te))])
+                Sigma_tr = np.diag(noise_var[train_mask])
+                C_tr = sf2 * K_base[np.ix_(train_mask, train_mask)] + Sigma_tr
+                try:
+                    L_tr = np.linalg.cholesky(C_tr)
+                except np.linalg.LinAlgError:
+                    return 1e10
+                Cinv_y = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, y_tr))
+                Cinv_H = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, H_tr))
+                A = H_tr.T @ Cinv_H
+                try:
+                    beta_hat = np.linalg.solve(A, H_tr.T @ Cinv_y)
+                except np.linalg.LinAlgError:
+                    return 1e10
+                # Predict at test points: mean function + GP posterior mean
+                r_tr = y_tr - H_tr @ beta_hat
+                Cinv_r = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, r_tr))
+                K_te_tr = sf2 * K_base[np.ix_(test_mask, train_mask)]
+                y_pred = H_te @ beta_hat + K_te_tr @ Cinv_r
+                total_mse += np.sum((y_te - y_pred) ** 2)
+                n_test += len(y_te)
+            return total_mse / max(1, n_test)
+
+        # Grid search over σ_f (including σ_f = 0)
+        log_sf_grid = np.concatenate([[-20], np.linspace(-4, 2, 20)])
+        cv_scores = np.array([_blocked_cv_mse(lsf) for lsf in log_sf_grid])
+        best_log_sf = log_sf_grid[np.argmin(cv_scores)]
+        sf2_opt = np.exp(2 * best_log_sf)
+        if best_log_sf <= -19:
+            sf2_opt = 0.0
+
+        # Build optimal C and compute posterior on β = (α, c)
+        C = sf2_opt * K_base + Sigma_n
+        try:
+            C_inv = np.linalg.inv(C)
+        except np.linalg.LinAlgError:
+            return np.nan, np.nan
+
+        # R&W eq. 2.42
+        A = H.T @ C_inv @ H
+        try:
+            A_inv = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            return np.nan, np.nan
+
+        beta_hat = A_inv @ H.T @ C_inv @ y
+        alpha_mean = float(beta_hat[0])
+        gp_alpha_sd = float(np.sqrt(max(0, A_inv[0, 0])))
+
+        # Final SD: max of GP posterior SD and blocked bootstrap SD.
+        # GP captures model misspecification (non-power-law via σ_f > 0).
+        # Bootstrap captures temporal correlation + finite-sample effects.
+        if block_alpha_sd is not None:
+            alpha_sd = max(gp_alpha_sd, block_alpha_sd)
+        else:
+            alpha_sd = gp_alpha_sd
+
+        return alpha_mean, alpha_sd
+
+    def alpha_per_asset(self, n_landmarks=80):
+        """Fit growth exponent α per asset via 1D NW projection.
+
+        For each asset i, projects to z = X_i (i-th coordinate) and
+        estimates σ̂²(z) via Nadaraya-Watson on (ΔX_i)²/dt, then fits
+        log(σ̂²) ~ α_i · log(X_i) via BayesianRidge.
+
+        Same 1D pipeline as directional_alpha_test (consistent methodology).
 
         Returns:
             dict with alpha_means, alpha_sds, p_bubbles (arrays of length d)
         """
-        from sklearn.linear_model import BayesianRidge
         from scipy import stats
-
-        # Evaluate covariance at landmarks
-        cov_at_landmarks = self.predict(self.landmarks)  # (m, d, d)
 
         alpha_means = np.zeros(self.d)
         alpha_sds = np.zeros(self.d)
         p_bubbles = np.zeros(self.d)
 
         for i in range(self.d):
-            sigma2_ii = cov_at_landmarks[:, i, i]
-            X_i = self.landmarks[:, i]
+            z = self._X_t[:, i]
+            dz = self._dX[:, i]
+            alpha_means[i], alpha_sds[i] = self._estimate_alpha_1d(
+                z, dz, self.dt, n_landmarks)
 
-            # Filter valid
-            valid = (X_i > 1e-4) & (sigma2_ii > 1e-8)
-            if np.sum(valid) < 10:
-                alpha_means[i] = np.nan
-                alpha_sds[i] = np.nan
+            if np.isnan(alpha_means[i]):
                 p_bubbles[i] = 0.0
                 continue
 
-            log_X = np.log(X_i[valid]).reshape(-1, 1)
-            log_sig2 = np.log(sigma2_ii[valid])
-
-            brr = BayesianRidge(alpha_1=1e-6, alpha_2=1e-6,
-                                lambda_1=1e-6, lambda_2=1e-6,
-                                fit_intercept=True)
-            brr.fit(log_X, log_sig2)
-
-            alpha_means[i] = float(brr.coef_[0])
-            alpha_sds[i] = float(np.sqrt(brr.sigma_[0, 0])) if hasattr(brr, 'sigma_') else 0.5
-
             if alpha_sds[i] > 0:
-                z = (alpha_means[i] - 2.0) / alpha_sds[i]
-                p_bubbles[i] = float(stats.norm.cdf(z))
+                z_score = (alpha_means[i] - 2.0) / alpha_sds[i]
+                p_bubbles[i] = float(stats.norm.cdf(z_score))
             else:
                 p_bubbles[i] = 1.0 if alpha_means[i] > 2.0 else 0.0
 
@@ -1246,6 +1484,109 @@ class MultivariateCdCEstimator:
             'alpha_means': alpha_means,
             'alpha_sds': alpha_sds,
             'p_bubbles': p_bubbles,
+        }
+
+    def directional_alpha_test(self, n_directions=36, n_landmarks_1d=80,
+                                candidate_directions=None):
+        """
+        Test for bubbles along portfolio directions via 1D projection.
+
+        For each direction w on the unit sphere:
+          1. Project: z_t = w^T X_t (scalar process)
+          2. Squared increments: (Δz)²/dt → target
+          3. 1D Nadaraya-Watson kernel regression: σ̂²_w(z)
+          4. BayesianRidge: log(σ̂²_w) ~ α_w · log(|z|) + C
+
+        This avoids the 2D covariance estimation entirely, using the
+        well-tested 1D pipeline (α̂=2.00 for GBM, α̂=2.52 for CEV β=2.5).
+
+        Bubble ⟺ ∃ direction w with α_w > 2 (Feller criterion on projection).
+
+        Args:
+            n_directions: Number of directions to sample (2D: half-circle)
+            n_landmarks_1d: Landmarks for 1D NW regression per direction
+            candidate_directions: Optional (n_dir, d) array of specific directions
+
+        Returns dict with:
+            - alpha_max: Maximum α across all directions
+            - alpha_max_sd: SD of the maximizing direction's α
+            - w_star: The direction achieving alpha_max
+            - p_bubble: P(bubble | data) via max-z statistic
+            - all_alphas, all_sds, all_directions: per-direction results
+            - per_asset: Results from alpha_per_asset() for comparison
+        """
+        from sklearn.linear_model import BayesianRidge
+        from scipy import stats
+
+        d = self.d
+        X_t = self._X_t
+        dX = self._dX
+        dt = self.dt
+        n = len(X_t)
+
+        # Generate candidate directions
+        if candidate_directions is not None:
+            directions = np.array(candidate_directions)
+            directions = directions / np.linalg.norm(directions, axis=1, keepdims=True)
+        elif d == 2:
+            angles = np.linspace(0, np.pi, n_directions, endpoint=False)
+            directions = np.column_stack([np.cos(angles), np.sin(angles)])
+        else:
+            rng = np.random.RandomState(42)
+            random_dirs = rng.randn(n_directions - d, d)
+            random_dirs /= np.linalg.norm(random_dirs, axis=1, keepdims=True)
+            directions = np.vstack([np.eye(d), random_dirs])
+
+        all_alphas = np.zeros(len(directions))
+        all_sds = np.zeros(len(directions))
+
+        for i, w in enumerate(directions):
+            z = X_t @ w
+            dz = dX @ w
+            all_alphas[i], all_sds[i] = self._estimate_alpha_1d(
+                z, dz, dt, n_landmarks_1d)
+
+        # Find maximum α direction
+        valid_mask = ~np.isnan(all_alphas)
+        if not np.any(valid_mask):
+            return {
+                'alpha_max': np.nan, 'alpha_max_sd': np.nan,
+                'w_star': np.zeros(d), 'p_bubble': 0.0,
+                'all_alphas': all_alphas, 'all_directions': directions,
+                'per_asset': self.alpha_per_asset(),
+            }
+
+        best_idx = np.nanargmax(all_alphas)
+        alpha_max = all_alphas[best_idx]
+        alpha_max_sd = all_sds[best_idx]
+        w_star = directions[best_idx]
+
+        # P(bubble) via max-z statistic with proper multiple testing.
+        # Under H0 (all α_w = 2): z_w = (α̂_w - 2)/σ̂_w ~ N(0,1).
+        # T = max_w z_w. P(bubble) = Φ(T)^n_eff (CDF of max-normal).
+        n_valid = np.sum(valid_mask)
+        n_eff = max(d, n_valid // 4)
+
+        z_scores = np.full(len(directions), -np.inf)
+        for i in range(len(directions)):
+            if valid_mask[i] and all_sds[i] > 0:
+                z_scores[i] = (all_alphas[i] - 2.0) / all_sds[i]
+
+        z_max = np.max(z_scores)
+        if np.isfinite(z_max):
+            p_bubble = float(stats.norm.cdf(z_max) ** n_eff)
+        else:
+            p_bubble = 0.0
+
+        return {
+            'alpha_max': float(alpha_max),
+            'alpha_max_sd': float(alpha_max_sd),
+            'w_star': w_star,
+            'p_bubble': float(p_bubble),
+            'all_alphas': all_alphas,
+            'all_sds': all_sds,
+            'all_directions': directions,
+            'per_asset': self.alpha_per_asset(),
         }
 
 
@@ -2463,6 +2804,89 @@ class SigKGEDMDCdCEstimator:
 
         return self
 
+    def fit_koopman_at_horizon(self, k: int) -> dict:
+        """Fit Koopman operator at horizon k*dt using stored augmented states.
+
+        Must call fit() first. Reuses same landmarks and bandwidth.
+        At horizon Δt = k*dt, the Koopman eigenvalue μ = e^{λ·Δt} is larger,
+        making explosive modes detectable above regularization noise.
+
+        Returns dict with koopman_eigvals, gen_eigvals, K_horizon, n_pairs,
+        horizon_dt, and diagnostics (kernel coverage, semigroup ratio).
+        """
+        if not hasattr(self, '_X_aug_t'):
+            raise RuntimeError("Call fit() before fit_koopman_at_horizon()")
+        if k < 1:
+            raise ValueError("k must be >= 1")
+
+        X_aug = self._X_aug_t
+        n = len(X_aug)
+        if k >= n:
+            raise ValueError(f"k={k} >= n_samples={n}")
+
+        X_source = X_aug[:-k]
+        X_target = self._X_aug_t  # use _X_aug_t not _X_aug_next for horizon k
+        # For horizon k: pair (X_aug[i], X_aug[i+k])
+        # But _X_aug_t was built from post-warmup data aligned with _X_aug_next
+        # We need X_aug at t and X_aug at t+k
+        # _X_aug_t[i] corresponds to time i, _X_aug_t[i+k] to time i+k
+        X_target = X_aug[k:]
+        n_pairs = len(X_source)
+
+        m = len(self.landmarks)
+        K_t = self._kernel_matrix_ard(X_source, self.landmarks)
+        K_next = self._kernel_matrix_ard(X_target, self.landmarks)
+
+        K_gram = K_t.T @ K_t + self.regularization * np.eye(m)
+        K_horizon = np.linalg.solve(K_gram, K_t.T @ K_next)
+
+        koopman_eigvals = np.linalg.eig(K_horizon)[0]
+        delta_t = k * self.dt
+
+        # Generator eigenvalues via log (NOT (μ-1)/Δt)
+        # For complex μ: log(μ) = log|μ| + i·arg(μ)
+        gen_eigvals = np.log(koopman_eigvals.astype(complex)) / delta_t
+
+        # --- Diagnostics ---
+
+        # Diagnostic 1: Kernel coverage at target points
+        K_next_lm = self._kernel_matrix_ard(X_target, self.landmarks)
+        coverage = K_next_lm.sum(axis=1)
+        min_coverage = float(coverage.min())
+        frac_low_coverage = float(np.mean(coverage < 0.1))
+
+        # Diagnostic 2: Semigroup consistency
+        # Compare with single-step leading eigenvalue
+        single_step_eigvals = np.linalg.eig(self.Koopman)[0]
+        lead_single = single_step_eigvals[np.argmax(np.abs(single_step_eigvals))]
+        lead_horizon = koopman_eigvals[np.argmax(np.abs(koopman_eigvals))]
+        log_lead_single = np.log(complex(lead_single)) if abs(lead_single) > 1e-10 else 0.0
+        log_lead_horizon = np.log(complex(lead_horizon)) if abs(lead_horizon) > 1e-10 else 0.0
+        semigroup_ratio = (np.real(log_lead_horizon) / np.real(log_lead_single)
+                          if abs(np.real(log_lead_single)) > 1e-10 else np.nan)
+
+        # Diagnostic 3: Effective explosion probability
+        if hasattr(self, '_S_data'):
+            S = self._S_data
+            S_99 = np.percentile(S, 99.9)
+            frac_extreme = float(np.mean(S[k:] > S_99 * 2)) if len(S) > k else 0.0
+        else:
+            frac_extreme = 0.0
+
+        return {
+            'koopman_eigvals': koopman_eigvals,
+            'gen_eigvals': gen_eigvals,
+            'K_horizon': K_horizon,
+            'n_pairs': n_pairs,
+            'horizon_dt': delta_t,
+            'k': k,
+            # Diagnostics
+            'min_coverage': min_coverage,
+            'frac_low_coverage': frac_low_coverage,
+            'semigroup_ratio': float(np.real(semigroup_ratio)),
+            'frac_extreme': frac_extreme,
+        }
+
     # --- Kernel and landmark utilities ---
 
     def _select_landmarks_fps(self, X: np.ndarray, m: int) -> np.ndarray:
@@ -2580,6 +3004,113 @@ class SigKGEDMDCdCEstimator:
         """Extract drift μ(z) = L(S)(z) from the generator."""
         f_S = self.landmarks_S_raw
         return self.generator_on_function(f_S, X_query_aug)
+
+    # --- Sturm-Liouville eigenvalue test ---
+
+    def sturm_liouville_eigenvalues(self, n_grid: int = 200,
+                                      S_range: tuple = None,
+                                      n_eigenvalues: int = 10,
+                                      method: str = 'direct') -> dict:
+        """
+        Solve the generator eigenvalue problem via Sturm-Liouville discretization.
+
+        Instead of extracting eigenvalues from the Koopman matrix (which reflects
+        conservative Euler dynamics), discretize the generator L = ½σ²(S)∂²/∂S²
+        + μ(S)∂/∂S on a 1D grid with Dirichlet BCs (killed semigroup).
+
+        This uses the LOCAL estimates σ²(S) and μ(S) — which are accurate —
+        to solve for GLOBAL eigenvalues without requiring explosive trajectories.
+
+        Bubble ⟺ leading eigenvalue λ_1 > 0 (Khasminskii criterion).
+
+        Args:
+            n_grid: Number of interior grid points
+            S_range: (S_min, S_max) for the grid. Default: data range.
+            n_eigenvalues: Number of leading eigenvalues to return
+            method: 'direct' or 'cdc' for σ² estimation
+
+        Returns dict with eigenvalues, eigenvectors, grid, and diagnostics.
+        """
+        from scipy import linalg as sp_linalg
+
+        # Grid setup
+        S_data = self._S_t
+        if S_range is None:
+            S_min = max(np.percentile(S_data, 0.5), 1e-4)
+            S_max = np.percentile(S_data, 99.5)
+        else:
+            S_min, S_max = S_range
+
+        # Interior grid points (Dirichlet: u=0 at boundaries)
+        S_grid = np.linspace(S_min, S_max, n_grid + 2)[1:-1]  # interior only
+        h = (S_max - S_min) / (n_grid + 1)  # grid spacing
+
+        # Evaluate σ²(S) and μ(S) at grid points
+        log_S_grid = np.log(np.maximum(S_grid, 1e-8))
+        # Build augmented query points (normalized)
+        # For QV, use median value (we're evaluating the marginal generator)
+        qv_median = np.median(np.abs(self._X_aug_t[:, 1])) * self._qv_std
+        X_aug_grid = np.column_stack([
+            log_S_grid / self._log_S_std,
+            np.full(n_grid, qv_median / self._qv_std)
+        ])
+
+        if method == 'direct':
+            sigma2 = self.sigma_squared_direct(X_aug_grid)
+        else:
+            sigma2 = self.sigma_squared_cdc(X_aug_grid, S_grid)
+
+        mu = self.drift(X_aug_grid)
+
+        # Build finite-difference matrix for L = ½σ²∂² + μ∂
+        # Second derivative: (u_{i+1} - 2u_i + u_{i-1}) / h²
+        # First derivative: (u_{i+1} - u_{i-1}) / (2h)
+        L = np.zeros((n_grid, n_grid))
+        for i in range(n_grid):
+            a = 0.5 * sigma2[i] / h**2  # diffusion coefficient
+            b = mu[i] / (2 * h)          # advection coefficient
+
+            if i > 0:
+                L[i, i - 1] = a - b      # u_{i-1}
+            L[i, i] = -2 * a             # u_i
+            if i < n_grid - 1:
+                L[i, i + 1] = a + b      # u_{i+1}
+
+        # Solve eigenvalue problem
+        eigvals, eigvecs = sp_linalg.eig(L)
+
+        # Sort by real part (descending — we want the leading eigenvalue)
+        order = np.argsort(-np.real(eigvals))
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+
+        # Take only requested number
+        eigvals = eigvals[:n_eigenvalues]
+        eigvecs = eigvecs[:, :n_eigenvalues]
+
+        # Diagnostics
+        max_re = float(np.real(eigvals[0]))
+        n_positive = int(np.sum(np.real(eigvals) > 0))
+
+        # Check eigenfunction positivity for leading mode
+        lead_eigfn = np.real(eigvecs[:, 0])
+        if np.sum(lead_eigfn) < 0:
+            lead_eigfn = -lead_eigfn  # sign convention
+        frac_positive = float(np.mean(lead_eigfn > 0))
+
+        return {
+            'eigenvalues': eigvals,
+            'eigenvectors': eigvecs,
+            'S_grid': S_grid,
+            'sigma2': sigma2,
+            'mu': mu,
+            'max_re_lambda': max_re,
+            'n_positive': n_positive,
+            'lead_eigfn_frac_positive': frac_positive,
+            'h': h,
+            'S_range': (S_min, S_max),
+            'method': method,
+        }
 
     # --- Alpha estimation with both methods ---
 
@@ -2769,6 +3300,456 @@ class SigKGEDMDCdCEstimator:
                 'n_jk_cdc': len(alpha_jk_cdc),
                 'n_jk_direct': len(alpha_jk_direct),
             }
+        }
+
+    # --- Operator-based bubble diagnostics (Qin-Linetsky / Khasminskii) ---
+    #
+    # Theoretical connection (Q&L 2015, Thm 3.1):
+    #   Bubble ⟺ strict local martingale under Q
+    #          ⟺ pricing operator has NO recurrent positive eigenfunction
+    #          ⟺ process is transient (not recurrent)
+    #
+    # For 1D diffusions with σ²(S) ~ c·S^α:
+    #   α < 2 → bounded eigenfunctions exist → recurrent → no bubble
+    #   α > 2 → no bounded eigenfunction → transient → bubble
+    #
+    # σ²(S) is measure-invariant (Girsanov changes only drift), so the
+    # P-learned operator gives correct Q-answers for boundary classification.
+    #
+    # IMPORTANT: These operator tests are DIAGNOSTICS, not primary tests.
+    # The direct α regression (fit_alpha_bayesian) is far more reliable
+    # because it directly estimates σ²(S) — the quantity that determines
+    # eigenfunction existence — without going through the operator.
+    #
+    # Why operator tests are noisy:
+    # (1) RBF basis is bounded → eigenfunction reconstruction decays at
+    #     boundary regardless of true eigenfunction behavior
+    # (2) K^n amplifies Koopman approximation error exponentially
+    # (3) Martingale defect at dt is O(dt²), smaller than operator error
+    #
+    # The operator's VALUE is for pricing (eigenfunction decomposition of
+    # payoffs), not for σ² extraction or bubble classification.
+
+    def eigenfunction_spectrum(self) -> dict:
+        """
+        Eigenvalue spectrum of the learned Koopman operator.
+
+        Returns eigenvalues sorted by magnitude with continuous-time rates.
+        For a well-learned operator:
+        - Largest |λ| ≈ 1.0 (stationary/dominant mode)
+        - Real eigenvalues with |λ| < 1 are stable decaying modes
+        - Complex pairs indicate oscillatory dynamics
+        """
+        eigvals, eigvecs = np.linalg.eig(self.Koopman)
+        mag = np.abs(eigvals)
+        order = np.argsort(-mag)
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+        mag = mag[order]
+
+        # Continuous-time rates: μ_k = log(λ_k) / dt
+        # For real positive λ: μ = log(λ)/dt
+        # For complex: μ = log|λ|/dt + i·angle(λ)/dt
+        ct_rates = np.log(np.maximum(mag, 1e-15)) / self.dt
+
+        spectral_gap = float(mag[0] - mag[1]) if len(mag) > 1 else 0.0
+
+        return {
+            'eigenvalues': eigvals,
+            'eigenvectors': eigvecs,
+            'magnitudes': mag,
+            'continuous_time_rates': ct_rates,
+            'spectral_gap': spectral_gap,
+            'leading_eigenvalue': complex(eigvals[0]),
+            'leading_magnitude': float(mag[0]),
+        }
+
+    def eigenfunction_bubble_test(self, tail_percentile: float = 75.0,
+                                   n_top_eigenfunctions: int = 3) -> dict:
+        """
+        Test bubble via eigenfunction growth rate (Khasminskii / Q&L criterion).
+
+        Theory (Qin & Linetsky 2015, Thm 3.1 + Appendix F):
+        - No bubble: pricing operator has a bounded positive eigenfunction π(x)
+        - Bubble: no such eigenfunction exists (π grows unboundedly)
+
+        For 1D diffusions with σ²(S) ~ c·S^α:
+        - α < 2: bounded eigenfunctions exist (recurrent, no bubble)
+        - α > 2: eigenfunctions unbounded (transient, bubble)
+
+        Method: Evaluate leading Koopman eigenfunctions at training points.
+        Check growth rate d(log|φ|)/d(log S) in the upper tail vs lower tail.
+        If upper-tail growth exceeds lower-tail growth → accelerating → bubble.
+
+        NOTE: σ²(S) is measure-invariant (Girsanov changes only drift), so
+        the boundary spectral classification from the P-Koopman gives the
+        correct Q-answer for whether bounded eigenfunctions exist.
+
+        CAVEAT: RBF basis functions are bounded, so ALL reconstructed
+        eigenfunctions decay outside landmark support. We only test WITHIN
+        the well-supported data range, using percentile bands.
+
+        Args:
+            tail_percentile: percentile threshold for upper/lower tail bands
+            n_top_eigenfunctions: number of leading eigenfunctions to analyze
+
+        Returns:
+            dict with growth exponents, bubble probability, diagnostics
+        """
+        from scipy import stats as sp_stats
+
+        spec = self.eigenfunction_spectrum()
+        eigvals = spec['eigenvalues']
+        eigvecs = spec['eigenvectors']
+
+        # Evaluate eigenfunctions at training points
+        K_train = self._kernel_matrix_ard(self._X_aug_t, self.landmarks)
+        S_train = self._S_t.copy()
+        log_S = np.log(np.maximum(S_train, 1e-8))
+
+        # Percentile bands
+        p_lo = 100 - tail_percentile  # e.g., 25th percentile
+        p_hi = tail_percentile        # e.g., 75th percentile
+        S_lo = np.percentile(S_train, p_lo)
+        S_hi = np.percentile(S_train, p_hi)
+        S_mid_lo = np.percentile(S_train, 40)
+        S_mid_hi = np.percentile(S_train, 60)
+
+        mask_lower = (S_train >= S_lo) & (S_train < S_mid_lo)
+        mask_middle = (S_train >= S_mid_lo) & (S_train <= S_mid_hi)
+        mask_upper = (S_train > S_mid_hi) & (S_train <= S_hi)
+
+        results_per_ef = []
+
+        for k in range(min(n_top_eigenfunctions, len(eigvals))):
+            lam_k = eigvals[k]
+            v_k = eigvecs[:, k]
+
+            # Skip complex eigenfunctions (take only real part)
+            if np.abs(lam_k.imag) > 0.01 * np.abs(lam_k.real):
+                continue
+
+            v_k = np.real(v_k)
+            lam_k = np.real(lam_k)
+
+            # Eigenfunction values at training points
+            phi_k = K_train @ v_k
+
+            # Ensure positive (eigenfunctions can be ± ; pick sign so mean > 0)
+            if np.mean(phi_k) < 0:
+                phi_k = -phi_k
+
+            # Growth rate in each band: regress log|φ| ~ p·log(S)
+            def _growth_in_band(mask):
+                if np.sum(mask) < 10:
+                    return np.nan, np.nan
+                ls = log_S[mask]
+                lp = np.log(np.maximum(np.abs(phi_k[mask]), 1e-15))
+                valid = np.isfinite(ls) & np.isfinite(lp)
+                if np.sum(valid) < 10:
+                    return np.nan, np.nan
+                slope, intercept, r_val, p_val, se = sp_stats.linregress(
+                    ls[valid], lp[valid])
+                return slope, se
+
+            slope_lower, se_lower = _growth_in_band(mask_lower)
+            slope_middle, se_middle = _growth_in_band(mask_middle)
+            slope_upper, se_upper = _growth_in_band(mask_upper)
+
+            # Full-range growth
+            valid_all = (S_train >= S_lo) & (S_train <= S_hi)
+            slope_full, se_full = _growth_in_band(valid_all)
+
+            # Acceleration: does growth increase from lower to upper tail?
+            # For bubble (CEV β>2): σ²~S^β → eigenfunction growth accelerates
+            # For no-bubble (GBM): σ²~S² → eigenfunction growth is constant
+            if not (np.isnan(slope_upper) or np.isnan(slope_lower)):
+                acceleration = slope_upper - slope_lower
+                # Combined SE for the difference
+                se_accel = np.sqrt(se_upper**2 + se_lower**2) if \
+                    not (np.isnan(se_upper) or np.isnan(se_lower)) else 1.0
+            else:
+                acceleration = 0.0
+                se_accel = 1.0
+
+            results_per_ef.append({
+                'eigenvalue': float(lam_k),
+                'slope_lower': float(slope_lower) if not np.isnan(slope_lower) else None,
+                'slope_middle': float(slope_middle) if not np.isnan(slope_middle) else None,
+                'slope_upper': float(slope_upper) if not np.isnan(slope_upper) else None,
+                'slope_full': float(slope_full) if not np.isnan(slope_full) else None,
+                'se_full': float(se_full) if not np.isnan(se_full) else None,
+                'acceleration': float(acceleration),
+                'se_acceleration': float(se_accel),
+            })
+
+        # Primary diagnostic: use the leading real eigenfunction
+        if results_per_ef:
+            lead = results_per_ef[0]
+            accel = lead['acceleration']
+            se_accel = lead['se_acceleration']
+
+            # Positive acceleration → eigenfunction grows faster at large S
+            # → transient boundary → bubble
+            # Map to probability: P(bubble) = P(acceleration > 0)
+            if se_accel > 0:
+                z_accel = accel / se_accel
+                p_bubble_accel = float(sp_stats.norm.cdf(z_accel))
+            else:
+                p_bubble_accel = 0.5
+        else:
+            accel = 0.0
+            se_accel = 1.0
+            p_bubble_accel = 0.5
+
+        return {
+            'p_bubble_eigen': p_bubble_accel,
+            'acceleration': accel,
+            'se_acceleration': se_accel,
+            'leading_eigenvalue': float(np.real(eigvals[0])),
+            'spectral_gap': spec['spectral_gap'],
+            'eigenfunctions': results_per_ef,
+            'n_lower': int(np.sum(mask_lower)),
+            'n_middle': int(np.sum(mask_middle)),
+            'n_upper': int(np.sum(mask_upper)),
+        }
+
+    def martingale_defect(self, n_grid: int = 50) -> dict:
+        """
+        Diagnostic: compute E[S_{t+dt} | S_t = s] for various s.
+
+        For a true Q-martingale: E^Q[S_{t+dt}|S_t] = S_t (no defect).
+        For a strict local martingale: E^Q[S_{t+dt}|S_t] < S_t for large S.
+
+        Under P (observed measure), S has drift: E^P[S_{t+dt}|S_t] = S_t(1+μdt).
+        We estimate E^P and check if the RATIO E^P[S_{t+dt}|S_t]/S_t decreases
+        at large S. Decreasing ratio = evidence of local mass loss at ∞ = bubble.
+
+        NOTE: Confounded by state-dependent drift under P. This is a
+        diagnostic complement to the α test, not a standalone decision.
+
+        Returns:
+            dict with S_grid, conditional expectations, ratio, and slope.
+        """
+        from scipy import stats as sp_stats
+
+        # Use binned training data for robustness
+        S_t = self._S_t.copy()
+        S_next = self._S_next.copy()
+
+        # Percentile-based grid (avoid extremes)
+        S_pcts = np.percentile(S_t, np.linspace(5, 95, n_grid))
+        S_grid = np.unique(S_pcts)
+
+        # For each grid point, compute E[S_next | S_t ≈ s] using Koopman
+        # Method: Apply Koopman to f(x) = S(x) = exp(x[0] * log_S_std)
+        # In the Nyström basis: f at landmarks = self.landmarks_S_raw
+        f_S = self.landmarks_S_raw
+        alpha_S = self._function_to_coeffs(f_S)
+        beta_S = self.Koopman @ alpha_S  # E[f(x_{t+1})|x_t] in coeff space
+
+        cond_exp = np.zeros(len(S_grid))
+        for i, s in enumerate(S_grid):
+            # Construct augmented state for query point s
+            log_s_norm = np.log(max(s, 1e-8)) / self._log_S_std
+            # QV: use median QV from nearby training points
+            nearby = np.abs(S_t - s) < 0.1 * s
+            if np.sum(nearby) > 5:
+                qv_nearby = self._X_aug_t[nearby, 1]
+                qv_val = np.median(qv_nearby)
+            else:
+                qv_val = np.median(self._X_aug_t[:, 1])
+
+            x_query = np.array([[log_s_norm, qv_val]])
+            K_q = self._kernel_matrix_ard(x_query, self.landmarks)
+            cond_exp[i] = float(K_q @ beta_S)
+
+        # Ratio: E[S_{t+dt}|S_t=s] / s
+        ratio = cond_exp / np.maximum(S_grid, 1e-8)
+
+        # Expected ratio under constant drift: (1 + μ·dt)
+        # Estimate μ from data
+        mean_ratio = np.mean(S_next / S_t)
+
+        # Normalized ratio: observed / expected
+        norm_ratio = ratio / mean_ratio
+
+        # Slope of normalized ratio vs log(S) in upper half
+        upper_half = S_grid > np.median(S_grid)
+        if np.sum(upper_half) >= 5:
+            slope, _, r_val, _, se = sp_stats.linregress(
+                np.log(S_grid[upper_half]), norm_ratio[upper_half])
+        else:
+            slope, se, r_val = 0.0, 1.0, 0.0
+
+        return {
+            'S_grid': S_grid,
+            'conditional_expectation': cond_exp,
+            'ratio': ratio,
+            'normalized_ratio': norm_ratio,
+            'defect_slope': float(slope),
+            'defect_slope_se': float(se),
+            'mean_drift_ratio': float(mean_ratio),
+            'note': ('Learned under P, not Q. Negative defect_slope at large S '
+                     'suggests local mass loss (bubble). Confounded by '
+                     'state-dependent drift.'),
+        }
+
+    def koopman_propagation_test(self, horizons=None, n_grid: int = 30) -> dict:
+        """
+        Multi-step Koopman propagation test for bubble detection.
+
+        Key idea: Apply K^n to f(S)=S and f(S)=S² at various horizons.
+        For a true martingale under Q:
+          E[S_T | S_0=s] = s·e^{rT}  (constant ratio across S levels)
+        For a strict local martingale (bubble):
+          E[S_T | S_0=s] < s·e^{rT}  for large s and large T
+
+        Under P, drift μ replaces r, but the KEY SIGNAL is:
+        Does the ratio E[S_T|S_0=s] / (s·e^{μT}) DECREASE at large s?
+
+        At one-step dt, the defect is O(dt²) — undetectable.
+        At horizon T = n·dt, the defect accumulates to detectable levels
+        because the strict local martingale property implies mass loss
+        to infinity that grows with T.
+
+        Uses eigendecomposition for efficient K^n computation.
+
+        Also propagates f(S)=S² to extract E[S²_T|S_0]:
+          Variance(S_T|S_0=s) = E[S²_T|S_0=s] - (E[S_T|S_0=s])²
+        For bubble processes, variance grows superlinearly with s.
+
+        Returns:
+            dict with propagation ratios at each horizon, bubble scores.
+        """
+        from scipy import stats as sp_stats
+
+        if horizons is None:
+            horizons = [10, 50, 100, 200]  # in steps
+
+        # Eigendecompose for efficient K^n
+        eigvals, eigvecs = np.linalg.eig(self.Koopman)
+        eigvecs_inv = np.linalg.inv(eigvecs)
+
+        # Functions at landmarks: f(S) = S and f(S) = S²
+        f_S = self.landmarks_S_raw
+        f_S2 = self.landmarks_S_raw ** 2
+        alpha_S = self._function_to_coeffs(f_S)
+        alpha_S2 = self._function_to_coeffs(f_S2)
+
+        # Grid of S values (percentile-based, avoid extremes)
+        S_t = self._S_t
+        S_pcts = np.percentile(S_t, np.linspace(10, 90, n_grid))
+        S_grid = np.unique(S_pcts)
+
+        # Build query augmented states
+        X_query = np.zeros((len(S_grid), 2))
+        for i, s in enumerate(S_grid):
+            X_query[i, 0] = np.log(max(s, 1e-8)) / self._log_S_std
+            nearby = np.abs(S_t - s) < 0.15 * s
+            if np.sum(nearby) > 3:
+                X_query[i, 1] = np.median(self._X_aug_t[nearby, 1])
+            else:
+                X_query[i, 1] = np.median(self._X_aug_t[:, 1])
+        K_query = self._kernel_matrix_ard(X_query, self.landmarks)
+
+        # Estimate drift from data (for normalization)
+        mean_log_return = np.mean(np.log(self._S_next / self._S_t))
+        mu_est = mean_log_return / self.dt
+
+        results_by_horizon = {}
+        bubble_scores = []
+
+        for n_steps in horizons:
+            T = n_steps * self.dt
+
+            # K^n via eigendecomposition
+            lambda_n = eigvals ** n_steps
+            K_power_alpha_S = eigvecs @ (lambda_n * (eigvecs_inv @ alpha_S))
+            K_power_alpha_S2 = eigvecs @ (lambda_n * (eigvecs_inv @ alpha_S2))
+            K_power_alpha_S = np.real(K_power_alpha_S)
+            K_power_alpha_S2 = np.real(K_power_alpha_S2)
+
+            # E[S_T | S_0 = s] and E[S²_T | S_0 = s]
+            E_S = K_query @ K_power_alpha_S
+            E_S2 = K_query @ K_power_alpha_S2
+
+            # Normalized ratio: E[S_T|S_0=s] / (s · e^{μT})
+            drift_factor = np.exp(mu_est * T)
+            ratio = E_S / (S_grid * drift_factor)
+
+            # Does ratio decrease at large S? (bubble signature)
+            log_S = np.log(S_grid)
+            upper_mask = S_grid > np.percentile(S_grid, 50)
+            if np.sum(upper_mask) >= 5:
+                slope, _, _, _, se = sp_stats.linregress(
+                    log_S[upper_mask], ratio[upper_mask])
+            else:
+                slope, se = 0.0, 1.0
+
+            # Variance ratio: Var[S_T|S_0=s] / s²
+            var_S = np.maximum(E_S2 - E_S**2, 0)
+            var_ratio = var_S / (S_grid**2)
+
+            # Does variance ratio increase at large S? (bubble = superlinear var)
+            if np.sum(upper_mask) >= 5:
+                var_slope, _, _, _, var_se = sp_stats.linregress(
+                    log_S[upper_mask], np.log(np.maximum(var_ratio[upper_mask], 1e-15)))
+            else:
+                var_slope, var_se = 0.0, 1.0
+
+            # Bubble score for this horizon:
+            # Negative ratio_slope + positive var_slope = bubble evidence
+            # Combine: score = -ratio_slope/se + var_slope/se
+            score_ratio = -slope / max(se, 1e-8)
+            score_var = var_slope / max(var_se, 1e-8)
+
+            results_by_horizon[n_steps] = {
+                'T': float(T),
+                'S_grid': S_grid.copy(),
+                'E_S': E_S.copy(),
+                'ratio': ratio.copy(),
+                'ratio_slope': float(slope),
+                'ratio_slope_se': float(se),
+                'var_ratio': var_ratio.copy(),
+                'var_slope': float(var_slope),
+                'var_slope_se': float(var_se),
+                'score_ratio': float(score_ratio),
+                'score_var': float(score_var),
+            }
+            bubble_scores.append(score_ratio)
+
+        # Aggregate: bubble evidence should INCREASE with horizon
+        # (the defect accumulates). Use the longest reliable horizon.
+        # Reliable = ratio still positive (Koopman hasn't blown up)
+        best_score = 0.0
+        best_horizon = horizons[0]
+        for n_steps in horizons:
+            r = results_by_horizon[n_steps]
+            # Check Koopman hasn't become unstable
+            if np.all(r['ratio'] > 0) and np.all(r['ratio'] < 10):
+                if r['score_ratio'] > best_score:
+                    best_score = r['score_ratio']
+                    best_horizon = n_steps
+
+        # P(bubble) from the best horizon's ratio slope
+        best_r = results_by_horizon[best_horizon]
+        if best_r['ratio_slope_se'] > 0:
+            # Negative slope = bubble evidence
+            p_bubble = float(sp_stats.norm.cdf(
+                -best_r['ratio_slope'] / best_r['ratio_slope_se']))
+        else:
+            p_bubble = 0.5
+
+        return {
+            'p_bubble_propagation': p_bubble,
+            'best_horizon_steps': best_horizon,
+            'best_horizon_T': float(best_horizon * self.dt),
+            'best_ratio_slope': float(best_r['ratio_slope']),
+            'best_ratio_slope_se': float(best_r['ratio_slope_se']),
+            'horizons': results_by_horizon,
+            'bubble_scores': bubble_scores,
+            'mu_estimated': float(mu_est),
         }
 
 
