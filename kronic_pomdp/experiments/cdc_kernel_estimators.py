@@ -1589,6 +1589,153 @@ class MultivariateCdCEstimator:
             'per_asset': self.alpha_per_asset(),
         }
 
+    def conditional_feller_test(self, price_idx=0, vol_proxy_idx=None,
+                                n_vol_bins=5, n_landmarks_1d=80):
+        """Test for bubbles in asset `price_idx` conditional on a volatility proxy.
+
+        Handles non-separable σ²(X,Y) where the marginal test might miss a
+        bubble that only appears in certain vol regimes (JPS 2022 Remark 6).
+
+        For each vol-proxy quantile bin, estimates α on the price sub-series
+        falling in that bin.  Bubble iff ANY bin has P(α > 2) > 0.5.
+
+        Args:
+            price_idx: Index of the asset to test.
+            vol_proxy_idx: Index of the vol proxy variable in X. If None,
+                use realized QV of the price process (window=100).
+            n_vol_bins: Number of quantile bins for the vol proxy.
+            n_landmarks_1d: Landmarks for the 1D GP α estimator per bin.
+
+        Returns:
+            dict with per-bin and aggregate results.
+        """
+        from scipy import stats
+
+        X_t = self._X_t
+        dX = self._dX
+        dt = self.dt
+        n = len(X_t)
+
+        z_all = X_t[:, price_idx]
+        dz_all = dX[:, price_idx]
+
+        # --- Vol proxy ---
+        if vol_proxy_idx is not None:
+            vol_proxy = X_t[:, vol_proxy_idx]
+        else:
+            # Realized QV from price increments
+            w = 100
+            sq_inc = dz_all ** 2
+            vol_proxy = np.zeros(n)
+            # Cumulative sum for efficient windowed average
+            cs = np.concatenate([[0.0], np.cumsum(sq_inc)])
+            for t in range(n):
+                t0 = max(0, t - w)
+                length = t - t0
+                if length > 0:
+                    vol_proxy[t] = (cs[t] - cs[t0]) / (length * dt)
+                else:
+                    vol_proxy[t] = sq_inc[t] / dt if t < len(sq_inc) else 0.0
+
+        # --- Quantile bins ---
+        bin_edges = np.quantile(vol_proxy, np.linspace(0, 1, n_vol_bins + 1))
+        # Ensure unique edges (can happen with discrete data)
+        bin_edges = np.unique(bin_edges)
+        actual_n_bins = len(bin_edges) - 1
+        if actual_n_bins < 1:
+            return {
+                'alpha_per_bin': np.array([np.nan]),
+                'sd_per_bin': np.array([np.nan]),
+                'p_bubble_per_bin': np.array([0.0]),
+                'vol_bin_edges': bin_edges,
+                'vol_bin_counts': np.array([n]),
+                'alpha_max': np.nan,
+                'alpha_max_sd': np.nan,
+                'p_bubble': 0.0,
+                'alpha_weighted': np.nan,
+                'sd_weighted': np.nan,
+            }
+
+        alpha_per_bin = np.full(actual_n_bins, np.nan)
+        sd_per_bin = np.full(actual_n_bins, np.nan)
+        p_bubble_per_bin = np.zeros(actual_n_bins)
+        vol_bin_counts = np.zeros(actual_n_bins, dtype=int)
+
+        for b in range(actual_n_bins):
+            lo, hi = bin_edges[b], bin_edges[b + 1]
+            if b < actual_n_bins - 1:
+                mask = (vol_proxy >= lo) & (vol_proxy < hi)
+            else:
+                mask = (vol_proxy >= lo) & (vol_proxy <= hi)
+
+            vol_bin_counts[b] = int(np.sum(mask))
+            if vol_bin_counts[b] < 200:
+                # Too few points for reliable estimation
+                continue
+
+            z_bin = z_all[mask]
+            dz_bin = dz_all[mask]
+
+            a_mean, a_sd = self._estimate_alpha_1d(
+                z_bin, dz_bin, dt, n_landmarks_1d)
+            alpha_per_bin[b] = a_mean
+            sd_per_bin[b] = a_sd
+
+            if np.isnan(a_mean) or np.isnan(a_sd) or a_sd <= 0:
+                p_bubble_per_bin[b] = 0.0
+            else:
+                z_score = (a_mean - 2.0) / a_sd
+                p_bubble_per_bin[b] = float(stats.norm.cdf(z_score))
+
+        # --- Aggregate with Šidák correction for multiple bins ---
+        valid = ~np.isnan(alpha_per_bin) & ~np.isnan(sd_per_bin) & (sd_per_bin > 0)
+        n_valid = int(np.sum(valid))
+
+        # Max alpha across bins
+        if np.any(valid):
+            best_bin = np.nanargmax(alpha_per_bin)
+            alpha_max = float(alpha_per_bin[best_bin])
+            alpha_max_sd = float(sd_per_bin[best_bin])
+        else:
+            alpha_max = np.nan
+            alpha_max_sd = np.nan
+
+        # Šidák correction: P(bubble) = Φ(z_max)^n_bins under H0
+        # Same logic as directional_alpha_test
+        z_scores = np.full(actual_n_bins, -np.inf)
+        for b in range(actual_n_bins):
+            if valid[b] and sd_per_bin[b] > 0:
+                z_scores[b] = (alpha_per_bin[b] - 2.0) / sd_per_bin[b]
+
+        z_max = np.max(z_scores)
+        n_eff_bins = max(1, n_valid)
+        if np.isfinite(z_max):
+            p_bubble = float(stats.norm.cdf(z_max) ** n_eff_bins)
+        else:
+            p_bubble = 0.0
+
+        # Precision-weighted average
+        if np.any(valid):
+            prec = 1.0 / sd_per_bin[valid] ** 2
+            alpha_weighted = float(np.sum(prec * alpha_per_bin[valid]) / np.sum(prec))
+            sd_weighted = float(1.0 / np.sqrt(np.sum(prec)))
+        else:
+            alpha_weighted = np.nan
+            sd_weighted = np.nan
+
+        return {
+            'alpha_per_bin': alpha_per_bin,
+            'sd_per_bin': sd_per_bin,
+            'p_bubble_per_bin': p_bubble_per_bin,
+            'vol_bin_edges': bin_edges,
+            'vol_bin_counts': vol_bin_counts,
+            'alpha_max': alpha_max,
+            'alpha_max_sd': alpha_max_sd,
+            'p_bubble': p_bubble,
+            'alpha_weighted': alpha_weighted,
+            'sd_weighted': sd_weighted,
+        }
+
 
 def multivariate_cdc_example():
     """

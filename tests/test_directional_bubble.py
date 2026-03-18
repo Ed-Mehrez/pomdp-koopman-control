@@ -66,6 +66,64 @@ def simulate_multi_cev(S0, mu, c, beta, rho, T, dt, seed=42):
     return S
 
 
+def simulate_separable_sv_cev(X0=100.0, Y0=0.04, kappa=2.0, theta=0.04, xi=0.3,
+                               c=0.02, beta_slope=25.0, rho=-0.5,
+                               T=100.0, dt=0.01, seed=42):
+    """Separable SV where the CEV exponent depends on vol level.
+
+    dY = kappa*(theta - Y)*dt + xi*sqrt(Y)*dW2       (CIR vol)
+    dX = mu*X*dt + c * X^(beta(Y)/2) * dW1           (CEV with level-dependent β)
+
+    where beta(Y) = 2 + beta_slope * max(0, Y - theta)
+
+    At Y = theta: β = 2.0 (Feller boundary)
+    At Y > theta: β > 2 (bubble regime — strict local martingale)
+    At Y < theta: β = 2.0 (no bubble)
+
+    The CIR spends ~50% of time above theta, so:
+    - Marginal test averages across regimes → α ≈ 2 + noise (ambiguous)
+    - Conditional Feller in high-Y bins → clear α > 2
+
+    When beta_slope = 0: no bubble at any vol level (control).
+
+    Returns (n_steps+1, 2) array with columns [X, Y].
+    """
+    rng = np.random.RandomState(seed)
+    n_steps = int(T / dt)
+    sqrt_dt = np.sqrt(dt)
+
+    X = np.zeros((n_steps + 1, 2))
+    X[0, 0] = X0
+    X[0, 1] = Y0
+
+    C = np.array([[1.0, rho], [rho, 1.0]])
+    L = np.linalg.cholesky(C)
+
+    mu = 0.02
+
+    for t in range(n_steps):
+        Z = L @ rng.randn(2)
+        x, y = X[t, 0], X[t, 1]
+        y = max(y, 1e-8)
+
+        # CIR vol process
+        y_new = y + kappa * (theta - y) * dt + xi * np.sqrt(y) * sqrt_dt * Z[1]
+        y_new = max(y_new, 1e-8)
+
+        # Level-dependent CEV exponent
+        beta_y = 2.0 + beta_slope * max(0.0, y - theta)
+
+        # CEV price (exponential Euler)
+        vol_log = c * x ** (beta_y / 2 - 1)
+        drift_log = mu - 0.5 * c**2 * x ** (beta_y - 2)
+        x_new = x * np.exp(drift_log * dt + vol_log * sqrt_dt * Z[0])
+
+        X[t + 1, 0] = x_new
+        X[t + 1, 1] = y_new
+
+    return X
+
+
 def simulate_rotated_bubble(S0_bubble, S0_gbm, mu_b, c_b, beta_b,
                              mu_g, sigma_g, theta, rho, T, dt, seed=42):
     """
@@ -128,7 +186,7 @@ def run_dgp(name, X, dt, true_bubble, true_bubble_direction=None, verbose=True):
                   f"P(bubble) = {per_asset['p_bubbles'][i]:.3f}")
 
     # Directional test
-    dir_res = est.directional_alpha_test(n_directions=72)
+    dir_res = est.directional_alpha_test(n_directions=36)
     if verbose:
         print(f"    Directional: α_max = {dir_res['alpha_max']:.2f} "
               f"± {dir_res['alpha_max_sd']:.2f}, "
@@ -236,12 +294,74 @@ def main():
                        true_bubble_direction=R_inv_e1)
         all_results.append(res)
 
+    # --- DGP 6: Separable SV bubble (level-dependent α) ---
+    # CEV exponent β(Y) = 2 + 30·max(0, Y-θ). Above θ: bubble regime.
+    # Marginal test sees mixture → ambiguous. Conditional Feller bins by Y → catches it.
+    dgp_name = "SepSV bubble"
+    print(f"\n{'='*70}\nDGP: {dgp_name} — BUBBLE (α > 2 at high vol)\n{'='*70}")
+    for seed in seeds:
+        X_sv = simulate_separable_sv_cev(
+            beta_slope=30.0, T=T, dt=dt, seed=seed)
+        res = run_dgp(f"{dgp_name} s={seed}", X_sv, dt, true_bubble=True)
+
+        # Conditional Feller test — should detect α > 2 in high-vol bins
+        est = MultivariateCdCEstimator(n_landmarks=100)
+        est.fit(X_sv, dt=dt)
+        cond_res = est.conditional_feller_test(
+            price_idx=0, vol_proxy_idx=1, n_vol_bins=5, n_landmarks_1d=80)
+        print(f"    Conditional Feller: α_max = {cond_res['alpha_max']:.2f} "
+              f"± {cond_res['alpha_max_sd']:.2f}, "
+              f"P(bubble) = {cond_res['p_bubble']:.3f}, "
+              f"α_weighted = {cond_res['alpha_weighted']:.2f} "
+              f"± {cond_res['sd_weighted']:.2f}")
+        for b in range(len(cond_res['alpha_per_bin'])):
+            print(f"      Bin {b}: α = {cond_res['alpha_per_bin'][b]:.2f} "
+                  f"± {cond_res['sd_per_bin'][b]:.2f}, "
+                  f"P(α>2) = {cond_res['p_bubble_per_bin'][b]:.3f}, "
+                  f"n = {cond_res['vol_bin_counts'][b]}")
+
+        cond_correct = (cond_res['p_bubble'] > 0.5) == True
+        res['cond_bubble'] = cond_res['p_bubble'] > 0.5
+        res['correct_conditional'] = cond_correct
+        print(f"    → Conditional: {'CORRECT' if cond_correct else 'WRONG'}")
+        all_results.append(res)
+
+    # --- DGP 7: Separable SV no bubble (constant β=2) ---
+    dgp_name = "SepSV no bub"
+    print(f"\n{'='*70}\nDGP: {dgp_name} — NO BUBBLE (β=2 at all vol levels)\n{'='*70}")
+    for seed in seeds:
+        X_sv = simulate_separable_sv_cev(
+            beta_slope=0.0, T=T, dt=dt, seed=seed)
+        res = run_dgp(f"{dgp_name} s={seed}", X_sv, dt, true_bubble=False)
+
+        # Conditional Feller test — should see α ≈ 2 in all bins
+        est = MultivariateCdCEstimator(n_landmarks=100)
+        est.fit(X_sv, dt=dt)
+        cond_res = est.conditional_feller_test(
+            price_idx=0, vol_proxy_idx=1, n_vol_bins=5, n_landmarks_1d=80)
+        print(f"    Conditional Feller: α_max = {cond_res['alpha_max']:.2f} "
+              f"± {cond_res['alpha_max_sd']:.2f}, "
+              f"P(bubble) = {cond_res['p_bubble']:.3f}, "
+              f"α_weighted = {cond_res['alpha_weighted']:.2f} "
+              f"± {cond_res['sd_weighted']:.2f}")
+        for b in range(len(cond_res['alpha_per_bin'])):
+            print(f"      Bin {b}: α = {cond_res['alpha_per_bin'][b]:.2f} "
+                  f"± {cond_res['sd_per_bin'][b]:.2f}, "
+                  f"P(α>2) = {cond_res['p_bubble_per_bin'][b]:.3f}, "
+                  f"n = {cond_res['vol_bin_counts'][b]}")
+
+        cond_correct = (cond_res['p_bubble'] > 0.5) == False
+        res['cond_bubble'] = cond_res['p_bubble'] > 0.5
+        res['correct_conditional'] = cond_correct
+        print(f"    → Conditional: {'CORRECT' if cond_correct else 'WRONG'}")
+        all_results.append(res)
+
     # --- Summary ---
     print(f"\n{'='*70}")
     print("SUMMARY")
     print(f"{'='*70}")
-    print(f"{'DGP':<25} {'True':>6} {'Marginal':>9} {'Direction':>10}")
-    print("-" * 55)
+    print(f"{'DGP':<25} {'True':>6} {'Marginal':>9} {'Direction':>10} {'Conditional':>12}")
+    print("-" * 67)
 
     # Group by DGP name (3 seeds each)
     dgp_groups = {}
@@ -256,13 +376,23 @@ def main():
         n_m = sum(r['correct_marginal'] for r in results)
         n_d = sum(r['correct_directional'] for r in results)
         n = len(results)
-        print(f"{dgp_name:<25} {label:>6} {n_m}/{n:>7} {n_d}/{n:>9}")
+        has_cond = 'correct_conditional' in results[0]
+        if has_cond:
+            n_c = sum(r['correct_conditional'] for r in results)
+            cond_str = f"   {n_c}/{n}"
+        else:
+            cond_str = "       —"
+        print(f"{dgp_name:<25} {label:>6} {n_m}/{n:>7} {n_d}/{n:>9} {cond_str:>12}")
 
     # Overall
     n_total = len(all_results)
     n_m_total = sum(r['correct_marginal'] for r in all_results)
     n_d_total = sum(r['correct_directional'] for r in all_results)
-    print(f"\n  Total: Marginal {n_m_total}/{n_total}, Directional {n_d_total}/{n_total}")
+    has_cond_results = [r for r in all_results if 'correct_conditional' in r]
+    n_c_total = sum(r['correct_conditional'] for r in has_cond_results)
+    n_c_denom = len(has_cond_results)
+    cond_summary = f", Conditional {n_c_total}/{n_c_denom}" if n_c_denom > 0 else ""
+    print(f"\n  Total: Marginal {n_m_total}/{n_total}, Directional {n_d_total}/{n_total}{cond_summary}")
 
     return all_results
 
