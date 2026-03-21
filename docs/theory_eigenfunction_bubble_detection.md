@@ -232,6 +232,28 @@ $$
 
 For processes where $\alpha(S)$ is NOT constant (e.g., sigmoid-like $\sigma^2$ that transitions from one regime to another), the regression gives a weighted average over the observed range, which may differ from $\alpha_\infty$. **This is a genuine limitation** — the test is designed for processes with regular tail behavior.
 
+#### 8.2.1 Local Volatility Elasticity: The General Framework
+
+The local exponent $\alpha(S) = d\log\sigma^2/d\log S$ defined above is more precisely the **local volatility elasticity** $\varepsilon(S)$. For CEV processes, $\varepsilon(S) \equiv 2\gamma$ (constant). For general 1D diffusions, $\varepsilon(S)$ varies with price level and captures the instantaneous scaling behavior.
+
+**Relationship to Feller test**: The Feller integral $\int^\infty x/\sigma^2(x)\,dx$ converges iff $\varepsilon(S) > 2$ eventually (more precisely: iff $\liminf_{S\to\infty} \varepsilon(S) > 2$, under regular variation assumptions). This is strictly more general than requiring $\alpha_\infty > 2$ for the global regression.
+
+**GP gradient computation**: When using the GP model $\log\hat\sigma^2(z) = \alpha\cdot\log|z| + c + f(z)$ (§12.2, Stage 2), the local elasticity is computable from the GP posterior gradient:
+$$
+\varepsilon(S) = \alpha + \frac{\partial f}{\partial \log S}\bigg|_{S} = \alpha + \sum_j \frac{-({\log S - \log S_j})}{\ell^2} k_*(S, S_j) \cdot (C^{-1}\mathbf{r})_j
+$$
+where $\alpha$ is the parametric mean slope, $f$ is the GP residual, and $k_*$ is the SE kernel. At the data center, $\varepsilon \approx \alpha$ (GP residual slope ≈ 0). At the tails, $\varepsilon$ can deviate — capturing non-CEV behavior.
+
+**Hierarchy of generality**: The global regression $\hat\alpha$ (§8.2) is the simplest estimator. Local elasticity $\varepsilon(S)$ generalizes it to non-CEV 1D models. Conditioning on auxiliary dimensions (time, vol proxy, signature features) via the MLKFellerGP ARD kernel further generalizes to $\varepsilon(S | t, V, \text{sig})$ — see §11 for the tiered architecture.
+
+**Failure cases addressed by $\varepsilon$ but not by global $\alpha$**:
+- Logarithmic corrections: $\sigma^2(S) \sim S^2 \log(S)^p$ gives $\alpha = 2$ globally, but $\varepsilon(S) = 2 + p/\log S > 2$ locally, correctly identifying the bubble
+- Non-monotone $\sigma^2$: averaging across regimes attenuates $\alpha$; local $\varepsilon$ captures the high-S regime
+
+**Failure cases NOT addressed by $\varepsilon$** (require multi-dimensional conditioning):
+- SABR with leverage: $\varepsilon$ computed on marginal $\hat\sigma^2(S)$ inherits the omitted-variable bias from V; needs the joint $(S, V)$ log-linear separation (§8.5)
+- Rough volatility: path-dependent $\sigma^2$ requires signature-conditioned estimation
+
 #### 8.3 Consistency of KGEDMD σ² Estimation
 
 The KGEDMD `sigma_squared_direct` method performs kernel ridge regression:
@@ -449,6 +471,116 @@ This is where the Koopman eigenvalue approach (existing KGEDMD infrastructure) b
 
 Our contribution beyond JPS: (1) principled UQ via GP posterior, (2) directional extension via spectral measure, (3) conditional Feller for level-dependent SV, (4) roadmap for non-separable SV via Koopman generator.
 
+### 12. Unified GP Framework
+
+Every computation in the pipeline — from σ² estimation through α testing to eigenfunction pricing — is a Gaussian process computation. This section makes the correspondence explicit.
+
+#### 12.1 The GP-KRR Equivalence
+
+Kernel ridge regression (KRR) with regularization λ and GP regression with noise variance σ²_n are identical (Rasmussen & Williams 2006, §6.2):
+
+$$
+\hat{f}(x) = \mathbf{k}(x, X)(\mathbf{K} + \lambda \mathbf{I})^{-1} \mathbf{y} = \text{GP posterior mean with } \sigma_n^2 = \lambda
+$$
+
+The GP additionally provides the **posterior variance**:
+$$
+\text{Var}[f(x)] = k(x,x) - \mathbf{k}(x,X)(\mathbf{K} + \sigma_n^2\mathbf{I})^{-1}\mathbf{k}(X,x)
+$$
+
+This variance is the principled uncertainty quantification (UQ) that unifies all tiers.
+
+#### 12.2 The GP Pipeline
+
+**Stage 1: Diffusion coefficient estimation** (GP on squared increments).
+
+Given observations $(X_t, \Delta X_t)$, the squared increments $y_t = (\Delta X_t)^2 / \Delta t$ are noisy observations of $\sigma^2(X_t)$. The GP model:
+$$
+\sigma^2(x) \sim \text{GP}(0, k_{\text{RBF}}), \quad y_t = \sigma^2(X_t) + \varepsilon_t
+$$
+
+This is exactly the Nadaraya-Watson estimator (= KRR with specific kernel) and the KGEDMD direct-σ² regression. The Nyström approximation (landmark basis) is a standard GP inducing-point method (Quiñonero-Candela & Rasmussen 2005).
+
+**Stage 2: Feller exponent estimation** (GP with parametric mean on log σ²).
+
+Given the GP estimates $\hat{\sigma}^2(z_j)$ at landmarks, the Feller test fits:
+$$
+\log \hat{\sigma}^2(z_j) = \underbrace{\alpha \cdot \log|z_j| + c}_{\text{parametric mean}} + \underbrace{f(z_j)}_{\text{GP residual}} + \varepsilon_j
+$$
+
+This is R&W §2.7, eq. 2.42: GP with explicit basis functions $H = [\log|z|, 1]$.
+
+The posterior on $\beta = (\alpha, c)$ is:
+$$
+\bar{\beta} = (H^\top C^{-1} H)^{-1} H^\top C^{-1} \mathbf{y}, \quad \text{Cov}(\beta) = (H^\top C^{-1} H)^{-1}
+$$
+where $C = \sigma_f^2 K_{\text{SE}} + \Sigma_n$ combines GP prior ($\sigma_f^2 K_{\text{SE}}$) and observation noise ($\Sigma_n$).
+
+The bubble probability is:
+$$
+P(\text{bubble} | \text{data}) = P(\alpha > 2 | \text{data}) = \Phi\!\left(\frac{\hat{\alpha} - 2}{\hat{\sigma}_\alpha}\right)
+$$
+
+When $\sigma_f$ is selected via blocked CV (§5.4), the GP automatically widens the posterior at the Feller boundary (α ≈ 2 for GBM), giving the calibrated $P \approx 0.5$ that honest UQ requires.
+
+**Stage 3: Eigenfunction pricing** (GP on the transition operator).
+
+The KGEDMD Koopman solve:
+$$
+\hat{K} = (\mathbf{K}_{nM}^\top \mathbf{K}_{nM} + \lambda \mathbf{I})^{-1} \mathbf{K}_{nM}^\top \mathbf{K}_{n+1,M}
+$$
+is $d$ parallel GP regressions — one per basis function $\phi_j$. Each column of $\hat{K}$ is the GP posterior mean of $\mathbb{E}[\phi_j(X_{t+\Delta t}) | X_t = \cdot]$.
+
+The generator $\hat{L} = (\hat{K} - I)/\Delta t$ is the finite-difference derivative of the GP posterior mean. Its eigenpairs $(\lambda_k, v_k)$ give the spectral decomposition for pricing:
+$$
+\mathbb{E}[f(X_T) | X_0] = \sum_k c_k \cdot \lambda_k^{T/\Delta t} \cdot v_k(X_0)
+$$
+
+When no bubble (α ≤ 2), this gives the Hansen-Scheinkman factorization and Q&L eigenfunction pricing.
+
+#### 12.3 Kernel Specialization Across Tiers
+
+Each tier uses the same GP machinery with different kernel and mean function:
+
+| Tier | GP Observation Model | Kernel $k$ | Mean Function $m$ |
+|------|---------------------|------------|-------------------|
+| L1 | $\log \hat{\sigma}^2 = \alpha \log|S| + c + \varepsilon$ | $k = 0$ (degenerate) | $\alpha \log|S| + c$ |
+| L2 | $\log \hat{\sigma}^2_w(z) = \alpha_w \log|z| + c + f(z) + \varepsilon$ | $k_{\text{SE}}(\log z)$ | $\alpha \log|z| + c$ |
+| L2-SV | Same, per V-bin | $k_{\text{SE}}(\log z) \otimes k_{\text{SE}}(V)$ | $\alpha(V) \log|z| + c(V)$ |
+| L3 | $g(y) = 2\mu(y)/\sigma^2(y)$ (scale integrand) | $k_{\text{SE}}(y)$ | 0 (uninformative prior) |
+| Pricing | $\phi_j(X_{t+\Delta t}) = \sum_i K_{ij} \phi_i(X_t) + \varepsilon$ | $k_{\text{RBF}}(X)$ | 0 |
+
+The key insight: when a tier's kernel has zero flexibility ($\sigma_f = 0$), it collapses to the simpler tier above. L1 IS L2 with $\sigma_f = 0$. L2-SV IS L2 with the product kernel. The GCV model selection over $\sigma_f$ and kernel weights automatically selects the appropriate tier from data.
+
+#### 12.4 L3 as GP on the Scale Function Integrand
+
+For non-separable SV where the Feller α test gives α = 2 at every vol level, the bubble mechanism operates through the vol process drift. The full Feller boundary classification uses the scale function:
+$$
+s(y) = \int^y \exp\!\left(-\int^u \frac{2\mu(v)}{\sigma^2(v)}\,dv\right) du
+$$
+
+Bubble (vol explosion) ⟺ $s(\infty) < \infty$ ⟺ the integrand $g(y) = 2\mu(y)/\sigma^2(y)$ is sufficiently positive at large $y$.
+
+The GP model:
+$$
+g(y) \sim \text{GP}(0, k_{\text{SE}}(y))
+$$
+
+where $g(y_j)$ is estimated at landmarks from NW estimates of $\mu(y_j)$ and $\sigma^2(y_j)$ separately. The GP prior mean is 0 (agnostic about drift sign). When $y$ is small (uninformative data), the posterior reverts to the prior → $P(g > 0) \approx 0.5$ → calibrated uncertainty at the detection boundary.
+
+The bubble probability integrates the GP posterior over the scale function convergence criterion: $P(\text{bubble}) = P(s(\infty) < \infty | \text{data})$, computed via Monte Carlo draws from the GP posterior on $g$.
+
+#### 12.5 Connection to Existing Methods
+
+The GP framework subsumes existing approaches as special cases:
+
+- **Nadaraya-Watson** (Aït-Sahalia & Jacod): GP MAP with bandwidth-matched kernel, no UQ
+- **PSY/GSADF**: Not a GP method; tests drift (measure-dependent), not σ² (measure-invariant)
+- **JPS 2022 invariance**: Correctly identifies σ² as the invariant quantity; our framework adds GP UQ
+- **Parametric models** (CEV, SABR): GP with degenerate kernel ($\sigma_f = 0$) and specific mean function
+
+The GP posterior SD is the unified UQ measure across all tiers, all derived from the same RKHS norm (Berlinet & Thomas-Agnan 2004, Kanagawa et al. 2018).
+
 ### References
 
 - Delbaen, F., & Shirakawa, H. (2002). No arbitrage condition for positive diffusion price processes.
@@ -468,3 +600,7 @@ Our contribution beyond JPS: (1) principled UQ via GP posterior, (2) directional
 - Resnick, S. I. (2007). *Heavy-Tail Phenomena: Probabilistic and Statistical Modeling*. Springer.
 - Rasmussen, C. E., & Williams, C. K. I. (2006). *Gaussian Processes for Machine Learning*. MIT Press.
 - Arlot, S., & Celisse, A. (2010). A survey of cross-validation procedures for model selection. *Statist. Surv.*, 4, 40-79.
+- Kanagawa, M., Hennig, P., Sejdinovic, D., & Sriperumbudur, B. K. (2018). Gaussian processes and kernel methods: A review on connections. *arXiv:1807.02582*.
+- Berlinet, A., & Thomas-Agnan, C. (2004). *Reproducing Kernel Hilbert Spaces in Probability and Statistics*. Kluwer.
+- Klus, S., Nüske, F., Peitz, S., Niemann, J.-H., Clementi, C., & Schütte, C. (2020). Data-driven approximation of the Koopman generator. *Multiscale Model. Simul.*, 18(4), 1532-1549.
+- Quiñonero-Candela, J., & Rasmussen, C. E. (2005). A unifying view of sparse approximate Gaussian process regression. *JMLR*, 6, 1939-1959.
