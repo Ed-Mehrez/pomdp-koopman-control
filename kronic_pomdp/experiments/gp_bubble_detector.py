@@ -2980,41 +2980,73 @@ class MarginalLikelihoodFellerGP:
 
 
 class MLKFellerGP:
-    """Multilevel Kernel Feller GP with ARD — unified across tiers.
+    """Multilevel Kernel Feller GP with Bayesian Model Averaging.
 
-    Model (R&W §2.7 with ARD product kernel):
-        log σ̂²(x_i) = α·log|z_i| + c + f(x_i) + ε_i
-        f ~ GP(0, σ²_f · k_ARD(x, x'))
-        ε_i ~ N(0, σ²_{n,i})
+    Compares a finite set of candidate GP models via log marginal
+    likelihood (R&W §5.2) and averages P(bubble) across models
+    weighted by posterior model probability (BMA).
 
-    Input x_i = (log|z|, t, sig, v) — up to 4 dimensions.
-    ARD selects which dimensions matter via marginal likelihood:
-      ℓ_d → ∞  ⟹  dimension d switches off.
+    Candidate models (each has parametric mean H and SE kernel):
 
-    Limiting cases:
-      - All auxiliary ℓ → ∞  →  FellerGP (L1/L2)
-      - ℓ_t finite           →  regime-switching detection
-      - ℓ_sig finite         →  path-dependent σ²
-      - ℓ_v finite           →  conditional Feller (L2-SV)
+        M₁: H=[log|z|, 1], k=k_SE(z)              — stationary Feller
+        M₂: H=[log|z|, 1], k=k_SE(z)·k_SE(t)      — non-stationary
+        M₃: H=[log|z|, 1], k=k_SE(z)·k_SE(sig)    — path-dependent
+        M₄: H=[log|z|, log V̂, 1], k=k_SE(z)       — conditional Feller
+        M₅: H=[log|z|, 1], k=k_SE(z)·k_SE(t)·k_SE(sig) — full aux
 
-    Time-local P(bubble): condition GP at (t=T, current sig/v), fit
-    local α from the conditioned posterior across a log|z| grid.
+    Model priors encode structural knowledge:
+        - M₁ gets uniform prior (always plausible)
+        - M₄ (vol conditioning) gets a SKEPTICAL prior (log P(M₄) =
+          -log(BF_required)) because the V̂ proxy estimated from QV
+          is confounded with S through QV ∝ V²·S^{2β}. The partial
+          coefficient α in H=[logS, logV̂, 1] is unreliable when
+          corr(logS, logV̂) is high. The prior penalizes M₄ so it
+          is only selected when the data strongly support it.
+
+    For each model Mᵢ:
+        1. Optimize kernel hyperparameters via marginal likelihood grid
+        2. Compute log evidence p(y|Mᵢ) (Laplace-approximated)
+        3. GP posterior: β̂=(α,c), posterior SD from A⁻¹=(H^T C⁻¹ H)⁻¹
+        4. P(bubble|Mᵢ) = P(α > 2 | data, Mᵢ)
+
+    BMA output:
+        P(bubble) = Σᵢ P(bubble|Mᵢ) · P(Mᵢ|y)
+        α_mean = Σᵢ α̂ᵢ · P(Mᵢ|y)
+        α_sd = sqrt(Σᵢ [σ²ᵢ + (αᵢ - α_mean)²] · P(Mᵢ|y))
+
+    References:
+        Rasmussen & Williams (2006) Ch. 5 — model selection
+        Hoeting et al. (1999) — Bayesian Model Averaging
+        Duvenaud et al. (2013) — compositional kernel search
     """
 
     def __init__(self, n_landmarks=100, n_blocks=None,
                  sig_gamma=0.99, use_signatures='auto',
                  use_vol_proxy='auto', use_time=True,
-                 use_bipower=False):
+                 vol_confounding_penalty=10.0):
+        """
+        Args:
+            n_landmarks: number of NW landmarks
+            n_blocks: temporal blocks for noise estimation
+            sig_gamma: forgetting factor for lead-lag log-sig
+            use_signatures: 'auto', True, or False
+            use_vol_proxy: 'auto', True, or False
+            use_time: whether to include time models
+            vol_confounding_penalty: Bayes factor penalty for M₄.
+                QV-based V̂ is confounded with S (QV ∝ V²·S^{2β}).
+                Set higher when confounding is expected (e.g. SABR,
+                3/2 model). Default 10 = require BF > 10 to activate.
+        """
         self.n_landmarks = n_landmarks
         self.n_blocks = n_blocks
         self.sig_gamma = sig_gamma
         self.use_signatures = use_signatures
         self.use_vol_proxy = use_vol_proxy
         self.use_time = use_time
-        self.use_bipower = use_bipower
+        self.vol_confounding_penalty = vol_confounding_penalty
 
     def fit(self, z, dz, dt, vol_proxy=None):
-        """Full pipeline: NW → block noise → ARD GP → P(bubble).
+        """Full pipeline: NW → block noise → BMA across models.
 
         Args:
             z: (n,) price levels
@@ -3026,13 +3058,8 @@ class MLKFellerGP:
             self
         """
         n = len(z)
-        if self.use_bipower:
-            abs_dz = np.abs(dz)
-            sq_inc = np.zeros(n)
-            sq_inc[1:] = (np.pi / 2.0) * abs_dz[1:] * abs_dz[:-1] / dt
-            sq_inc[0] = dz[0] ** 2 / dt
-        else:
-            sq_inc = dz ** 2 / dt
+        sq_inc = dz ** 2 / dt
+        self._qv_based_vol = False
 
         n_blocks = self.n_blocks or min(10, max(5, n // 500))
         block_len = n // n_blocks
@@ -3040,35 +3067,46 @@ class MLKFellerGP:
 
         # --- Stage 0: Feature preparation ---
         log_z = np.log(np.maximum(np.abs(z), 1e-10))
-
         t_raw = np.arange(n, dtype=float) * dt
         T_obs = t_raw[-1] if t_raw[-1] > 0 else 1.0
-        t_norm = t_raw / T_obs  # ∈ [0, 1]
+        t_norm = t_raw / T_obs
 
-        # Signature features (lazy — only compute if needed)
+        # Signature features (QV area from lead-lag log-sig)
+        raw_qv = None
         sig_features = None
         if self.use_signatures != False:
-            sig_features = self._compute_signatures(z, dz)
-            if sig_features is not None:
-                sig_mean = np.mean(sig_features)
-                sig_std = max(np.std(sig_features), 1e-8)
-                sig_features = (sig_features - sig_mean) / sig_std
+            raw_qv = self._compute_signatures(z, dz)
+            if raw_qv is not None:
+                sig_mean = np.mean(raw_qv)
+                sig_std = max(np.std(raw_qv), 1e-8)
+                sig_features = (raw_qv - sig_mean) / sig_std
 
-        # Vol proxy
+        # Vol proxy: external if provided, else signature QV area.
+        # QV ∝ V²·S^{2β} so log(QV) is confounded with logS — this is
+        # why M₄ has a skeptical prior (vol_confounding_penalty).
         vol_norm = None
         if vol_proxy is not None and self.use_vol_proxy != False:
             vol_mean = np.mean(vol_proxy)
             vol_std = max(np.std(vol_proxy), 1e-8)
             vol_norm = (vol_proxy - vol_mean) / vol_std
+        elif self.use_vol_proxy == 'auto' and raw_qv is not None:
+            log_qv = np.log(np.maximum(np.abs(raw_qv), 1e-15))
+            finite_mask = log_qv > -30
+            if np.sum(finite_mask) > 100:
+                qv_mean = np.mean(log_qv[finite_mask])
+                qv_std = max(np.std(log_qv[finite_mask]), 1e-8)
+                vol_norm = (log_qv - qv_mean) / qv_std
+            # QV-based proxy has structural confounding:
+            # log(QV) = 2·logV + 2β·logS + const
+            # Apply extra penalty on top of vol_confounding_penalty.
+            # External vol proxies (implied vol, BPV) don't need this.
+            self._qv_based_vol = True
 
-        # --- Stage 1: Landmark placement + NW at landmarks ---
-        # NW uses z-space ONLY (like FellerGP). Time/vol/sig enter
-        # ONLY through the GP kernel, preserving backward compat.
+        # --- Stage 1: NW at landmarks (z-only, like FellerGP) ---
         quantiles = np.linspace(0.01, 0.99, m)
         landmarks_z = np.quantile(z, quantiles)
         ldists = np.abs(np.diff(landmarks_z))
-        bw = np.median(ldists) if len(ldists) > 0 else np.std(z)
-        bw = max(bw, 1e-8)
+        bw = max(np.median(ldists) if len(ldists) > 0 else np.std(z), 1e-8)
 
         diff = (landmarks_z[:, None] - z[None, :]) / bw
         K_nw = np.exp(-0.5 * diff ** 2)
@@ -3077,26 +3115,30 @@ class MLKFellerGP:
         valid_lm_mask = K_sum > 1e-10
         sigma2_nw = np.zeros(m)
         n_eff = np.zeros(m)
-        sigma2_nw[valid_lm_mask] = (K_nw[valid_lm_mask] @ sq_inc) / K_sum[valid_lm_mask]
-        n_eff[valid_lm_mask] = K_sum[valid_lm_mask] ** 2 / K_sq_sum[valid_lm_mask]
+        sigma2_nw[valid_lm_mask] = (
+            K_nw[valid_lm_mask] @ sq_inc) / K_sum[valid_lm_mask]
+        n_eff[valid_lm_mask] = (
+            K_sum[valid_lm_mask] ** 2 / K_sq_sum[valid_lm_mask])
 
-        valid = valid_lm_mask & (np.abs(landmarks_z) > 1e-4) & (sigma2_nw > 1e-8) & (n_eff > 2)
+        valid = (valid_lm_mask & (np.abs(landmarks_z) > 1e-4)
+                 & (sigma2_nw > 1e-8) & (n_eff > 2))
         if np.sum(valid) < 10:
             self._set_degenerate()
             return self
 
-        nv = np.sum(valid)
+        nv = int(np.sum(valid))
         valid_idx = np.where(valid)[0]
         x_logz = np.log(np.abs(landmarks_z[valid]))
         y = np.log(sigma2_nw[valid])
 
-        # Map each landmark to its nearest data index for auxiliary features
-        lm_data_idx = np.array([np.argmin(np.abs(z - landmarks_z[j])) for j in valid_idx])
+        lm_data_idx = np.array([
+            np.argmin(np.abs(z - landmarks_z[j])) for j in valid_idx])
         x_t = t_norm[lm_data_idx]
-        x_sig = sig_features[lm_data_idx] if sig_features is not None else None
+        x_sig = (sig_features[lm_data_idx]
+                 if sig_features is not None else None)
         x_vol = vol_norm[lm_data_idx] if vol_norm is not None else None
 
-        # --- Stage 2: Block noise estimation (z-only NW, like FellerGP) ---
+        # --- Stage 2: Block noise estimation ---
         noise_var = np.full(nv, 0.0)
         for jj, j in enumerate(valid_idx):
             block_ests = []
@@ -3109,229 +3151,203 @@ class MLKFellerGP:
                     if est_b > 1e-10:
                         block_ests.append(np.log(est_b))
             if len(block_ests) >= 3:
-                noise_var[jj] = np.var(block_ests, ddof=1) / len(block_ests)
+                noise_var[jj] = (np.var(block_ests, ddof=1)
+                                 / len(block_ests))
             else:
                 noise_var[jj] = 2.0 / n_eff[valid][jj]
         noise_var = np.maximum(noise_var, 2.0 / n_eff[valid])
+        Sigma_n = np.diag(noise_var)
 
-        # --- Stage 3: Blocked bootstrap α SE ---
-        block_alphas = []
-        for b in range(n_blocks):
-            sl = slice(b * block_len, min((b + 1) * block_len, n))
-            z_b = z[sl]
-            sq_b = sq_inc[sl]
-            diff_b = (landmarks_z[:, None] - z_b[None, :]) / bw
-            K_b = np.exp(-0.5 * diff_b ** 2)
-            K_b_sum = K_b.sum(axis=1)
-            valid_b = valid & (K_b_sum > 1e-10)
-            if np.sum(valid_b) < 5:
+        # --- Stage 3: Precompute kernel ingredients ---
+        sq_dist_z = (x_logz[:, None] - x_logz[None, :]) ** 2
+        z_range = max(x_logz.max() - x_logz.min(), 0.1)
+
+        sq_dist_t = (x_t[:, None] - x_t[None, :]) ** 2
+
+        sq_dist_sig = None
+        if x_sig is not None:
+            sq_dist_sig = (x_sig[:, None] - x_sig[None, :]) ** 2
+
+        sq_dist_vol = None
+        if x_vol is not None:
+            sq_dist_vol = (x_vol[:, None] - x_vol[None, :]) ** 2
+
+        # --- Stage 4: Enumerate and score candidate models ---
+        # Each model = (name, H matrix, kernel builder, log prior)
+        H_base = np.column_stack([x_logz, np.ones(nv)])
+
+        # V̂ confounding check: R² between logS and logV̂
+        r2_sv = 0.0
+        if x_vol is not None:
+            r2_sv = float(np.corrcoef(x_logz, x_vol)[0, 1] ** 2)
+
+        # Build H for M₄ (conditional Feller with V̂ covariate)
+        has_vol_covariate = (x_vol is not None and r2_sv < 0.8)
+        if has_vol_covariate:
+            H_vol = np.column_stack([x_logz, x_vol, np.ones(nv)])
+        else:
+            H_vol = H_base  # fall back to base if collinear
+
+        # Model definitions: (name, H, kernel_dims, log_prior)
+        # log_prior encodes structural knowledge about confounding
+        log_prior_base = 0.0  # uniform
+        # QV-based V̂ has structural confounding (logQV ∝ 2β·logS + 2logV)
+        # so it gets a much stronger penalty than external vol proxies.
+        base_penalty = self.vol_confounding_penalty
+        if getattr(self, '_qv_based_vol', False):
+            base_penalty = max(base_penalty, 100.0)  # BF > 100 required
+        log_prior_vol = -np.log(base_penalty)
+
+        candidates = [
+            ('M1_stationary', H_base, [], log_prior_base),
+        ]
+
+        if self.use_time:
+            candidates.append(
+                ('M2_time', H_base, ['t'], log_prior_base))
+
+        if x_sig is not None and self.use_signatures != False:
+            candidates.append(
+                ('M3_signature', H_base, ['sig'], log_prior_base))
+
+        if has_vol_covariate:
+            candidates.append(
+                ('M4_conditional', H_vol, [], log_prior_vol))
+
+        if (self.use_time and x_sig is not None
+                and self.use_signatures != False):
+            candidates.append(
+                ('M5_time_sig', H_base, ['t', 'sig'], log_prior_base))
+
+        # Score each model: optimize σ_f and length scales, compute LML
+        model_results = []
+
+        for name, H_m, kernel_dims, log_prior in candidates:
+            best_lml = -np.inf
+            best_params = None
+
+            # Length scale grids for each dimension
+            ell_z_cands = [max(z_range / d, 0.1) for d in [4, 2, 1]]
+            ell_t_cands = [0.5, 0.25, 0.15] if 't' in kernel_dims else [None]
+            ell_sig_cands = ([max((x_sig.max() - x_sig.min()) / d, 0.1)
+                              for d in [2, 1]]
+                             if 'sig' in kernel_dims else [None])
+
+            sf_grid = [-20, -2, -1, 0, 1, 2]
+
+            for ell_z in ell_z_cands:
+                K_z = np.exp(-sq_dist_z / (2 * ell_z ** 2))
+                for ell_t in ell_t_cands:
+                    K_t = (np.exp(-sq_dist_t / (2 * ell_t ** 2))
+                           if ell_t is not None else None)
+                    for ell_sig in ell_sig_cands:
+                        K_sig = (np.exp(-sq_dist_sig / (2 * ell_sig ** 2))
+                                 if ell_sig is not None
+                                 and sq_dist_sig is not None else None)
+
+                        for log_sf in sf_grid:
+                            sf2 = (np.exp(2 * log_sf)
+                                   if log_sf > -19 else 0.0)
+                            K = sf2 * K_z
+                            if K_t is not None:
+                                K = K * K_t
+                            if K_sig is not None:
+                                K = K * K_sig
+                            lml = self._log_marginal_likelihood(
+                                y, H_m, K, Sigma_n)
+                            if lml > best_lml:
+                                best_lml = lml
+                                best_params = {
+                                    'log_sf': log_sf, 'ell_z': ell_z,
+                                    'ell_t': ell_t, 'ell_sig': ell_sig}
+
+            if best_lml == -np.inf or best_params is None:
                 continue
-            s2_b = np.zeros(m)
-            s2_b[K_b_sum > 1e-10] = (K_b[K_b_sum > 1e-10] @ sq_b) / K_b_sum[K_b_sum > 1e-10]
-            mask_b = valid_b & (s2_b > 1e-10)
-            if np.sum(mask_b) < 5:
-                continue
-            x_b = np.log(np.abs(landmarks_z[mask_b]))
-            y_b = np.log(s2_b[mask_b])
-            n_eff_b = np.zeros(m)
-            K_b_sq = (K_b ** 2).sum(axis=1)
-            n_eff_b[K_b_sum > 1e-10] = K_b_sum[K_b_sum > 1e-10] ** 2 / K_b_sq[K_b_sum > 1e-10]
-            w_b = n_eff_b[mask_b]
-            H_b = np.column_stack([x_b, np.ones(len(x_b))])
-            WH = H_b * w_b[:, None]
+
+            # GP posterior for this model
+            sf2 = (np.exp(2 * best_params['log_sf'])
+                   if best_params['log_sf'] > -19 else 0.0)
+            K_opt = sf2 * np.exp(
+                -sq_dist_z / (2 * best_params['ell_z'] ** 2))
+            if best_params.get('ell_t') is not None:
+                K_opt = K_opt * np.exp(
+                    -sq_dist_t / (2 * best_params['ell_t'] ** 2))
+            if best_params.get('ell_sig') is not None and sq_dist_sig is not None:
+                K_opt = K_opt * np.exp(
+                    -sq_dist_sig / (2 * best_params['ell_sig'] ** 2))
+
+            C = K_opt + Sigma_n
             try:
-                beta_b = np.linalg.solve(WH.T @ H_b, WH.T @ y_b)
-                block_alphas.append(beta_b[0])
+                C_inv = np.linalg.inv(C)
+                A_mat = H_m.T @ C_inv @ H_m
+                A_inv = np.linalg.inv(A_mat)
             except np.linalg.LinAlgError:
                 continue
 
-        block_alpha_sd = None
-        if len(block_alphas) >= 3:
-            block_alpha_sd = np.std(block_alphas, ddof=1) / np.sqrt(len(block_alphas))
+            beta_hat = A_inv @ H_m.T @ C_inv @ y
+            alpha_m = float(beta_hat[0])
+            alpha_sd_m = float(np.sqrt(max(0, A_inv[0, 0])))
 
-        # --- Stage 4: GP fit ---
-        # Phase 1: blocked CV for σ_f (identical to FellerGP)
-        H = np.column_stack([x_logz, np.ones(nv)])
-        Sigma_n = np.diag(noise_var)
+            if alpha_sd_m <= 0 or np.isnan(alpha_m):
+                continue
 
-        sq_dist_z = (x_logz[:, None] - x_logz[None, :]) ** 2
-        z_range = max(x_logz.max() - x_logz.min(), 0.1)
-        ell_z = max(z_range / 4.0, 0.1)
-        K_z_base = np.exp(-sq_dist_z / (2 * ell_z ** 2))
-        sq_dist_t = (x_t[:, None] - x_t[None, :]) ** 2
+            # P(bubble | Mᵢ) from GP posterior
+            z_score = (alpha_m - 2.0) / alpha_sd_m
+            p_bubble_m = float(stats.norm.cdf(z_score))
 
-        # Assign landmarks to temporal blocks (for blocked CV)
-        lm_block_id = np.zeros(nv, dtype=int)
-        for jj, j in enumerate(valid_idx):
-            block_weights = np.zeros(n_blocks)
-            for b in range(n_blocks):
-                sl = slice(b * block_len, min((b + 1) * block_len, n))
-                block_weights[b] = K_nw[j, sl].sum()
-            lm_block_id[jj] = np.argmax(block_weights)
+            model_results.append({
+                'name': name,
+                'log_evidence': best_lml + log_prior,
+                'log_ml': best_lml,
+                'log_prior': log_prior,
+                'alpha': alpha_m,
+                'alpha_sd': alpha_sd_m,
+                'p_bubble': p_bubble_m,
+                'params': best_params,
+                'H': H_m,
+                'C_inv': C_inv,
+                'A_inv': A_inv,
+                'beta_hat': beta_hat,
+            })
 
-        def _blocked_cv_mse(log_sf):
-            sf2 = np.exp(2 * log_sf)
-            total_mse = 0.0
-            n_test = 0
-            for fold in np.unique(lm_block_id):
-                test_mask = lm_block_id == fold
-                train_mask = ~test_mask
-                if np.sum(train_mask) < 3 or np.sum(test_mask) < 1:
-                    continue
-                x_tr, y_tr = x_logz[train_mask], y[train_mask]
-                x_te, y_te = x_logz[test_mask], y[test_mask]
-                H_tr = np.column_stack([x_tr, np.ones(len(x_tr))])
-                H_te = np.column_stack([x_te, np.ones(len(x_te))])
-                Sigma_tr = np.diag(noise_var[train_mask])
-                C_tr = sf2 * K_z_base[np.ix_(train_mask, train_mask)] + Sigma_tr
-                try:
-                    L_tr = np.linalg.cholesky(C_tr)
-                except np.linalg.LinAlgError:
-                    return 1e10
-                Cinv_y = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, y_tr))
-                Cinv_H = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, H_tr))
-                A = H_tr.T @ Cinv_H
-                try:
-                    beta_hat = np.linalg.solve(A, H_tr.T @ Cinv_y)
-                except np.linalg.LinAlgError:
-                    return 1e10
-                r_tr = y_tr - H_tr @ beta_hat
-                Cinv_r = np.linalg.solve(L_tr.T, np.linalg.solve(L_tr, r_tr))
-                K_te_tr = sf2 * K_z_base[np.ix_(test_mask, train_mask)]
-                y_pred = H_te @ beta_hat + K_te_tr @ Cinv_r
-                total_mse += np.sum((y_te - y_pred) ** 2)
-                n_test += len(y_te)
-            return total_mse / max(1, n_test)
-
-        log_sf_grid = np.concatenate([[-20], np.linspace(-4, 2, 20)])
-        cv_scores = np.array([_blocked_cv_mse(lsf) for lsf in log_sf_grid])
-        best_log_sf = log_sf_grid[np.argmin(cv_scores)]
-        sf2_base = np.exp(2 * best_log_sf) if best_log_sf > -19 else 0.0
-
-        best_params = {'log_sf': best_log_sf, 'ell_z': ell_z,
-                       'ell_t': 1e10, 'ell_sig': 1e10, 'ell_v': 1e10}
-
-        # Phase 2: auxiliary dimensions via marginal likelihood Bayes factors
-        # Base ML (z-only, with CV-selected σ_f)
-        K_base = sf2_base * K_z_base
-        ML_base = self._log_marginal_likelihood(y, H, K_base, Sigma_n)
-        LOG3 = np.log(3)    # Bayes factor threshold for sig/vol
-        LOG_TIME = np.log(100)  # Stricter threshold for time (BF > 100)
-
-        # Phase 2a: add time dimension
-        # Keep CV-selected σ_f to prevent signal absorption into GP residual.
-        if self.use_time:
-            for ell_t in [0.5, 0.25, 0.15]:
-                K_t = np.exp(-sq_dist_t / (2 * ell_t ** 2))
-                K = sf2_base * K_z_base * K_t
-                lml = self._log_marginal_likelihood(y, H, K, Sigma_n)
-                if lml > ML_base + LOG_TIME:
-                    best_params['ell_t'] = ell_t
-                    ML_base = lml
-
-        # Phase 2b: add signature dimension
-        sq_dist_sig = None
-        if sig_features is not None and self.use_signatures != False:
-            sq_dist_sig = (x_sig[:, None] - x_sig[None, :]) ** 2
-            sig_range = max(x_sig.max() - x_sig.min(), 0.1)
-
-            for ell_sig in [sig_range / 2]:
-                sf2 = np.exp(2 * best_params['log_sf']) if best_params['log_sf'] > -19 else 0.0
-                K = sf2 * K_z_base * np.exp(-sq_dist_sig / (2 * ell_sig ** 2))
-                if best_params['ell_t'] < 1e8:
-                    K *= np.exp(-sq_dist_t / (2 * best_params['ell_t'] ** 2))
-                lml = self._log_marginal_likelihood(y, H, K, Sigma_n)
-                if lml > ML_base + LOG3:
-                    best_params['ell_sig'] = ell_sig
-                    ML_base = lml
-
-        # Phase 2c: add vol proxy dimension
-        if vol_norm is not None and self.use_vol_proxy != False:
-            sq_dist_v = (x_vol[:, None] - x_vol[None, :]) ** 2
-            v_range = max(x_vol.max() - x_vol.min(), 0.1)
-
-            for ell_v in [v_range / 2]:
-                sf2 = np.exp(2 * best_params['log_sf']) if best_params['log_sf'] > -19 else 0.0
-                K = sf2 * K_z_base
-                if best_params['ell_t'] < 1e8:
-                    K *= np.exp(-sq_dist_t / (2 * best_params['ell_t'] ** 2))
-                if sq_dist_sig is not None and best_params['ell_sig'] < 1e8:
-                    K *= np.exp(-sq_dist_sig / (2 * best_params['ell_sig'] ** 2))
-                K *= np.exp(-sq_dist_v / (2 * ell_v ** 2))
-                lml = self._log_marginal_likelihood(y, H, K, Sigma_n)
-                if lml > ML_base + LOG3:
-                    best_params['ell_v'] = ell_v
-
-        self._params = best_params
-
-        # --- Stage 5: GP posterior on β=(α,c) ---
-        # Global α uses base model (z-only, CV-selected σ_f) to match FellerGP.
-        # Time/sig/vol only enter through p_bubble_local() and predict().
-        base_params = {'log_sf': best_log_sf, 'ell_z': ell_z,
-                       'ell_t': 1e10, 'ell_sig': 1e10, 'ell_v': 1e10}
-        K_global = sf2_base * K_z_base
-        C_global = K_global + Sigma_n
-        try:
-            C_inv_global = np.linalg.inv(C_global)
-        except np.linalg.LinAlgError:
+        if not model_results:
             self._set_degenerate()
             return self
 
-        A_global = H.T @ C_inv_global @ H
-        try:
-            A_inv_global = np.linalg.inv(A_global)
-        except np.linalg.LinAlgError:
-            self._set_degenerate()
-            return self
+        # --- Stage 5: BMA across models ---
+        log_evidences = np.array([r['log_evidence'] for r in model_results])
+        log_evidences -= np.max(log_evidences)  # numerical stability
+        model_weights = np.exp(log_evidences)
+        model_weights /= model_weights.sum()
 
-        beta_hat_global = A_inv_global @ H.T @ C_inv_global @ y
-        gp_alpha_sd_global = float(np.sqrt(max(0, A_inv_global[0, 0])))
+        # BMA P(bubble)
+        p_bubbles = np.array([r['p_bubble'] for r in model_results])
+        self.p_bubble = float(np.sum(model_weights * p_bubbles))
 
-        # Full model (with active auxiliary dims) for predict/p_bubble_local
-        K_final = self._build_kernel(x_logz, x_t, x_sig, x_vol, best_params)
-        C = K_final + Sigma_n
-        try:
-            C_inv = np.linalg.inv(C)
-            A = H.T @ C_inv @ H
-            A_inv = np.linalg.inv(A)
-            beta_hat = A_inv @ H.T @ C_inv @ y
-        except np.linalg.LinAlgError:
-            # Fall back to global model
-            C_inv = C_inv_global
-            A_inv = A_inv_global
-            beta_hat = beta_hat_global
+        # BMA α (law of total expectation + variance)
+        alphas = np.array([r['alpha'] for r in model_results])
+        alpha_sds = np.array([r['alpha_sd'] for r in model_results])
+        self.alpha_mean = float(np.sum(model_weights * alphas))
+        # Total variance = E[Var] + Var[E]  (law of total variance)
+        e_var = float(np.sum(model_weights * alpha_sds ** 2))
+        var_e = float(np.sum(
+            model_weights * (alphas - self.alpha_mean) ** 2))
+        self.alpha_sd = float(np.sqrt(e_var + var_e))
 
-        # Global α from base model (backward-compatible with FellerGP)
-        gp_alpha_sd = gp_alpha_sd_global
+        # vol(P) from delta method on BMA
+        z_score_bma = ((self.alpha_mean - 2.0)
+                       / max(self.alpha_sd, 1e-8))
+        self.vol_p_bubble = float(stats.norm.pdf(z_score_bma))
 
-        if block_alpha_sd is not None:
-            alpha_sd = max(gp_alpha_sd, block_alpha_sd)
-        else:
-            alpha_sd = gp_alpha_sd
-
-        self.alpha_mean = float(beta_hat_global[0])
-        self.alpha_sd = alpha_sd
-
-        if np.isnan(self.alpha_mean) or alpha_sd <= 0:
-            self.p_bubble = 0.0
-            self.vol_p_bubble = 0.0
-        else:
-            z_score = (self.alpha_mean - 2.0) / alpha_sd
-            self.p_bubble = float(stats.norm.cdf(z_score))
-            self.vol_p_bubble = float(stats.norm.pdf(z_score))
-
-        # Store internals
+        # Store internals for diagnostics and p_bubble_local
+        self._model_results = model_results
+        self._model_weights = model_weights
         self._x_logz = x_logz
         self._x_t = x_t
         self._x_sig = x_sig
         self._x_vol = x_vol
         self._y = y
-        self._H = H
-        self._C_inv = C_inv
-        self._beta_hat = beta_hat
-        self._A_inv = A_inv
         self._noise_var = noise_var
-        self._block_alphas = block_alphas
         self._lm_data_idx = lm_data_idx
         self._log_z = log_z
         self._t_norm = t_norm
@@ -3340,6 +3356,21 @@ class MLKFellerGP:
         self._dt = dt
         self._T_obs = T_obs
         self._z = z
+        self._r2_sv = r2_sv
+        self._Sigma_n = Sigma_n
+        self._sq_dist_z = sq_dist_z
+        self._sq_dist_t = sq_dist_t
+        self._sq_dist_sig = sq_dist_sig
+
+        # For backward compat: use MAP model for predict/p_bubble_local
+        map_idx = int(np.argmax(
+            [r['log_evidence'] for r in model_results]))
+        self._map_model = model_results[map_idx]
+        self._H = model_results[map_idx]['H']
+        self._C_inv = model_results[map_idx]['C_inv']
+        self._A_inv = model_results[map_idx]['A_inv']
+        self._beta_hat = model_results[map_idx]['beta_hat']
+        self._params = model_results[map_idx]['params']
 
         return self
 
@@ -3347,7 +3378,8 @@ class MLKFellerGP:
         """Time-local P(α>2). Global if no args given.
 
         Constructs a test grid in log|z| at the query point in auxiliary
-        dimensions, gets GP posterior, fits local α via WLS.
+        dimensions, gets GP posterior from MAP model, fits local α via
+        WLS on the conditioned posterior.
         """
         if not hasattr(self, '_x_logz'):
             return self.p_bubble if hasattr(self, 'p_bubble') else 0.0
@@ -3356,45 +3388,46 @@ class MLKFellerGP:
             return self.p_bubble
 
         # Build test grid in log|z|
-        logz_grid = np.linspace(self._x_logz.min(), self._x_logz.max(), 50)
+        logz_grid = np.linspace(
+            self._x_logz.min(), self._x_logz.max(), 50)
         n_grid = len(logz_grid)
 
         # Auxiliary dims at query values
-        if t_query is None:
-            t_grid = np.full(n_grid, self._x_t[-1])  # default: final time
-        else:
-            t_grid = np.full(n_grid, t_query / self._T_obs)
+        t_grid = np.full(n_grid, (t_query / self._T_obs
+                                   if t_query is not None
+                                   else self._x_t[-1]))
 
         sig_grid = None
         if self._x_sig is not None:
-            if sig_query is not None:
-                sig_grid = np.full(n_grid, sig_query)
-            else:
-                sig_grid = np.full(n_grid, self._x_sig[-1])
+            sig_grid = np.full(n_grid, (sig_query if sig_query is not None
+                                         else self._x_sig[-1]))
 
         vol_grid = None
         if self._x_vol is not None:
-            if v_query is not None:
-                vol_grid = np.full(n_grid, v_query)
-            else:
-                vol_grid = np.full(n_grid, self._x_vol[-1])
+            vol_grid = np.full(n_grid, (v_query if v_query is not None
+                                         else self._x_vol[-1]))
 
-        # GP posterior at test grid
+        # GP posterior at test grid (MAP model)
         K_star = self._build_kernel_cross(
             logz_grid, t_grid, sig_grid, vol_grid,
             self._x_logz, self._x_t, self._x_sig, self._x_vol,
             self._params)
 
-        H_star = np.column_stack([logz_grid, np.ones(n_grid)])
+        n_h = self._H.shape[1]
+        if n_h == 3 and vol_grid is not None:
+            H_star = np.column_stack([logz_grid, vol_grid, np.ones(n_grid)])
+        else:
+            H_star = np.column_stack([logz_grid, np.ones(n_grid)])
+
         r = self._y - self._H @ self._beta_hat
         Cinv_r = self._C_inv @ r
-
         y_pred = H_star @ self._beta_hat + K_star @ Cinv_r
 
         # GP posterior variance at test grid
-        k_star_diag = self._build_kernel_diag(self._params)
+        sf2 = (np.exp(2 * self._params['log_sf'])
+               if self._params['log_sf'] > -19 else 0.0)
         v = K_star @ self._C_inv
-        var_gp = k_star_diag - np.sum(v * K_star, axis=1)
+        var_gp = sf2 - np.sum(v * K_star, axis=1)
         R = H_star - v @ self._H
         var_mean = np.sum(R @ self._A_inv * R, axis=1)
         post_var = np.maximum(var_gp + var_mean, 1e-10)
@@ -3409,10 +3442,6 @@ class MLKFellerGP:
             beta_local = A_local_inv @ (WH.T @ y_pred)
             alpha_local = float(beta_local[0])
             alpha_local_sd = float(np.sqrt(max(0, A_local_inv[0, 0])))
-            # Combine with block bootstrap
-            if hasattr(self, '_block_alphas') and len(self._block_alphas) >= 3:
-                alpha_local_sd = max(alpha_local_sd,
-                                     np.std(self._block_alphas, ddof=1) / np.sqrt(len(self._block_alphas)))
             if alpha_local_sd <= 0:
                 return 0.0
             z_score = (alpha_local - 2.0) / alpha_local_sd
@@ -3421,56 +3450,56 @@ class MLKFellerGP:
             return self.p_bubble
 
     def predict(self, z_new, t_new=None, v_new=None, sig_new=None):
-        """GP posterior mean of log σ² at new points."""
+        """GP posterior mean of log σ² at new points (MAP model)."""
         x_logz_new = np.log(np.maximum(np.abs(z_new), 1e-10))
         n_new = len(x_logz_new)
-        t_arr = np.full(n_new, self._x_t[-1]) if t_new is None else t_new / self._T_obs
-        sig_arr = sig_new
-        vol_arr = v_new
+        t_arr = (np.full(n_new, self._x_t[-1]) if t_new is None
+                 else t_new / self._T_obs)
 
-        H_new = np.column_stack([x_logz_new, np.ones(n_new)])
+        n_h = self._H.shape[1]
+        if n_h == 3 and v_new is not None:
+            H_new = np.column_stack([x_logz_new, v_new, np.ones(n_new)])
+        else:
+            H_new = np.column_stack([x_logz_new, np.ones(n_new)])
+
         K_star = self._build_kernel_cross(
-            x_logz_new, t_arr, sig_arr, vol_arr,
+            x_logz_new, t_arr, sig_new, v_new,
             self._x_logz, self._x_t, self._x_sig, self._x_vol,
             self._params)
         r = self._y - self._H @ self._beta_hat
         return H_new @ self._beta_hat + K_star @ (self._C_inv @ r)
 
-    def predict_variance(self, z_new, t_new=None, v_new=None, sig_new=None):
-        """GP posterior variance of log σ² at new points."""
-        x_logz_new = np.log(np.maximum(np.abs(z_new), 1e-10))
-        n_new = len(x_logz_new)
-        t_arr = np.full(n_new, self._x_t[-1]) if t_new is None else t_new / self._T_obs
-        sig_arr = sig_new
-        vol_arr = v_new
-
-        H_new = np.column_stack([x_logz_new, np.ones(n_new)])
-        K_star = self._build_kernel_cross(
-            x_logz_new, t_arr, sig_arr, vol_arr,
-            self._x_logz, self._x_t, self._x_sig, self._x_vol,
-            self._params)
-        k_diag = self._build_kernel_diag(self._params)
-        v = K_star @ self._C_inv
-        var_gp = k_diag[:n_new] if len(k_diag) >= n_new else np.full(n_new, k_diag[0])
-        var_gp = np.full(n_new, np.exp(2 * self._params['log_sf']) if self._params['log_sf'] > -19 else 0.0)
-        var_gp -= np.sum(v * K_star, axis=1)
-        R = H_new - v @ self._H
-        var_mean = np.sum(R @ self._A_inv * R, axis=1)
-        return np.maximum(var_gp + var_mean, 0.0)
-
     @property
     def active_dimensions(self):
-        """Which auxiliary dimensions ARD selected (ℓ < 1e8)."""
-        if not hasattr(self, '_params'):
+        """Which auxiliary dimensions the MAP model uses."""
+        if not hasattr(self, '_map_model'):
             return []
+        name = self._map_model['name']
         dims = []
-        if self._params.get('ell_t', 1e10) < 1e8:
+        if 'time' in name or self._params.get('ell_t') is not None:
             dims.append('time')
-        if self._params.get('ell_sig', 1e10) < 1e8:
+        if 'sig' in name or self._params.get('ell_sig') is not None:
             dims.append('signature')
-        if self._params.get('ell_v', 1e10) < 1e8:
+        if 'conditional' in name:
             dims.append('vol_proxy')
         return dims
+
+    @property
+    def model_comparison(self):
+        """Model comparison table: name, weight, α, P(bubble)."""
+        if not hasattr(self, '_model_results'):
+            return {}
+        return {
+            r['name']: {
+                'weight': float(w),
+                'log_ml': r['log_ml'],
+                'log_prior': r['log_prior'],
+                'alpha': r['alpha'],
+                'alpha_sd': r['alpha_sd'],
+                'p_bubble': r['p_bubble'],
+            }
+            for r, w in zip(self._model_results, self._model_weights)
+        }
 
     # --- Private helpers ---
 
@@ -3497,27 +3526,11 @@ class MLKFellerGP:
         qv_area = np.zeros(n)
         for i in range(n):
             feat = sig_map.update(np.array([log_returns[i]]))
-            # QV area = level-2 component (Lévy area between lead and lag)
             if len(feat) > 2:
-                qv_area[i] = feat[2]  # the single Lévy area for d=1
+                qv_area[i] = feat[2]
             else:
                 qv_area[i] = feat[-1]
-
         return qv_area
-
-    def _farthest_point_sampling(self, X, m):
-        """FPS in Euclidean space on data indices."""
-        n = len(X)
-        m = min(m, n)
-        rng = np.random.RandomState(42)
-        indices = [rng.randint(n)]
-        min_dists = np.full(n, np.inf)
-        for _ in range(m - 1):
-            last = X[indices[-1]]
-            dists = np.sum((X - last) ** 2, axis=1)
-            min_dists = np.minimum(min_dists, dists)
-            indices.append(np.argmax(min_dists))
-        return np.array(indices)
 
     def _log_marginal_likelihood(self, y, H, K, Sigma_n):
         """R&W §2.7 eq 2.45: log marginal likelihood with parametric mean."""
@@ -3534,60 +3547,32 @@ class MLKFellerGP:
             L_A = np.linalg.cholesky(A)
         except np.linalg.LinAlgError:
             return -np.inf
-        beta_hat = np.linalg.solve(L_A.T, np.linalg.solve(L_A, H.T @ Cinv_y))
+        beta_hat = np.linalg.solve(
+            L_A.T, np.linalg.solve(L_A, H.T @ Cinv_y))
         r = y - H @ beta_hat
         Cinv_r = np.linalg.solve(L.T, np.linalg.solve(L, r))
         lml = (-0.5 * r @ Cinv_r
                - np.sum(np.log(np.diag(L)))
                - np.sum(np.log(np.diag(L_A)))
-               - 0.5 * (nv - 2) * np.log(2 * np.pi))
+               - 0.5 * (nv - H.shape[1]) * np.log(2 * np.pi))
         return float(lml)
-
-    def _build_kernel(self, x_logz, x_t, x_sig, x_vol, params):
-        """Build ARD product kernel matrix from params."""
-        sf2 = np.exp(2 * params['log_sf']) if params['log_sf'] > -19 else 0.0
-        ell_z = params['ell_z']
-        K = sf2 * np.exp(-(x_logz[:, None] - x_logz[None, :]) ** 2 / (2 * ell_z ** 2))
-
-        if params.get('ell_t', 1e10) < 1e8:
-            ell_t = params['ell_t']
-            K *= np.exp(-(x_t[:, None] - x_t[None, :]) ** 2 / (2 * ell_t ** 2))
-
-        if x_sig is not None and params.get('ell_sig', 1e10) < 1e8:
-            ell_sig = params['ell_sig']
-            K *= np.exp(-(x_sig[:, None] - x_sig[None, :]) ** 2 / (2 * ell_sig ** 2))
-
-        if x_vol is not None and params.get('ell_v', 1e10) < 1e8:
-            ell_v = params['ell_v']
-            K *= np.exp(-(x_vol[:, None] - x_vol[None, :]) ** 2 / (2 * ell_v ** 2))
-
-        return K
 
     def _build_kernel_cross(self, x_logz_1, x_t_1, x_sig_1, x_vol_1,
                              x_logz_2, x_t_2, x_sig_2, x_vol_2, params):
         """Cross-kernel between two sets of points."""
-        sf2 = np.exp(2 * params['log_sf']) if params['log_sf'] > -19 else 0.0
+        sf2 = (np.exp(2 * params['log_sf'])
+               if params['log_sf'] > -19 else 0.0)
         ell_z = params['ell_z']
-        K = sf2 * np.exp(-(x_logz_1[:, None] - x_logz_2[None, :]) ** 2 / (2 * ell_z ** 2))
-
-        if params.get('ell_t', 1e10) < 1e8:
-            ell_t = params['ell_t']
-            K *= np.exp(-(x_t_1[:, None] - x_t_2[None, :]) ** 2 / (2 * ell_t ** 2))
-
-        if x_sig_1 is not None and x_sig_2 is not None and params.get('ell_sig', 1e10) < 1e8:
-            ell_sig = params['ell_sig']
-            K *= np.exp(-(x_sig_1[:, None] - x_sig_2[None, :]) ** 2 / (2 * ell_sig ** 2))
-
-        if x_vol_1 is not None and x_vol_2 is not None and params.get('ell_v', 1e10) < 1e8:
-            ell_v = params['ell_v']
-            K *= np.exp(-(x_vol_1[:, None] - x_vol_2[None, :]) ** 2 / (2 * ell_v ** 2))
-
+        K = sf2 * np.exp(-(x_logz_1[:, None] - x_logz_2[None, :]) ** 2
+                          / (2 * ell_z ** 2))
+        if params.get('ell_t') is not None:
+            K = K * np.exp(-(x_t_1[:, None] - x_t_2[None, :]) ** 2
+                            / (2 * params['ell_t'] ** 2))
+        if (params.get('ell_sig') is not None
+                and x_sig_1 is not None and x_sig_2 is not None):
+            K = K * np.exp(-(x_sig_1[:, None] - x_sig_2[None, :]) ** 2
+                            / (2 * params['ell_sig'] ** 2))
         return K
-
-    def _build_kernel_diag(self, params):
-        """Diagonal of prior kernel (= sf2 for SE kernel)."""
-        sf2 = np.exp(2 * params['log_sf']) if params['log_sf'] > -19 else 0.0
-        return sf2
 
     def _set_degenerate(self):
         """Set degenerate results when fit fails."""
@@ -3595,7 +3580,8 @@ class MLKFellerGP:
         self.alpha_sd = np.nan
         self.p_bubble = 0.0
         self.vol_p_bubble = 0.0
-        self._params = {}
+        self._model_results = []
+        self._model_weights = np.array([])
 
 
 class ScaleFunctionGP:
