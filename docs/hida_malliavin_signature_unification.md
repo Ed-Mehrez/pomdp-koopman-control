@@ -430,6 +430,33 @@ We have shown explicitly: $$ c*{Bayes} = c*{Malliavin} = c\_{Signature} = \frac{
 
 The "Signature Method" is simply a numerical solver for the Hida-Malliavin projection, which itself is the functional analytic representation of the Bayesian Posterior sufficient statistics.
 
+> [!WARNING]
+> **Critical Implementation Notes (from experimental validation)**
+>
+> The theoretical isomorphism requires careful implementation. Three common pitfalls:
+>
+> 1. **Two Separate Regressions Required:**
+>    - The statement "Level 1 learns Mean, Level 2 learns Variance" does NOT mean a single regression learns both.
+>    - **Regression #1**: Signature → E[x|observations] (targets: true hidden state x)
+>    - **Regression #2**: Signature → Var[x|observations] (targets: squared errors from Regression #1, OR explicit variance targets)
+>    - The Level 2 signature *provides the basis functions* for variance, but the mapping must be learned separately.
+>
+> 2. **GP Variance ≠ Posterior Variance:**
+>    - **GP variance** σ²_GP(sig) = uncertainty about the regression function f at this input → 0 as training data → ∞
+>    - **Posterior variance** Var[x|sig] = irreducible uncertainty about x given observations → P_∞ (steady state)
+>    - Using GP variance as posterior variance gives ~3.5x error vs Kalman!
+>    - The posterior variance must be learned via Regression #2, not extracted from kernel uncertainty.
+>
+> 3. **Fair Comparison with Kalman Filter:**
+>    - Decay signatures do *smoothing* (window averaging); Kalman does *filtering*.
+>    - For fair comparison, set decay = exp((A - L·C)·dt) to match Kalman's effective memory.
+>    - With proper discrete Kalman baseline and fair decay, signatures match Kalman within ~2% (not "beat" it).
+>
+> **Experimental validation** (see `kronic_pomdp/experiments/`):
+> - Signature mean estimation: 0.98x Kalman RMSE (matches!)
+> - Signature variance estimation: 0.91x Kalman variance (10% better via Regression #2)
+> - Hida-Malliavin isomorphism: CONFIRMED, with the above caveats
+
 ------------------------------------------------------------------------
 
 ## 11. Generalization: Signatures as "Amortized" Bayesian Inference

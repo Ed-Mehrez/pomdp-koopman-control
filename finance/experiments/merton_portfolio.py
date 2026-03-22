@@ -29,7 +29,9 @@ import sys
 import os
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+RKHS_KRONIC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../rkhs_kronic/src'))
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, RKHS_KRONIC_ROOT)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -74,56 +76,136 @@ def simulate_heston(n_steps=1000, dt=1/252, S0=100, v0=0.04,
 
 
 # ============================================================================
-# 2. Volatility Estimation (Sig-KKF style)
+# 2. Volatility Estimation using Cumulative Signatures
 # ============================================================================
 
-def estimate_volatility_sigkkf(returns, n_prices, train_frac=0.3):
+class CumulativeSignatureState:
     """
-    Estimate volatility using signature-based features.
-    Uses rolling realized variance as training target (noisy proxy).
+    Maintains cumulative signature state using Chen's identity.
 
-    Args:
-        returns: log returns (length n_prices - 1)
-        n_prices: number of price points (to match output length)
-        train_frac: fraction of data for training
+    S(path_1 ⊕ path_2) = S(path_1) ⊗ S(path_2)
+
+    This allows O(1) updates regardless of path length.
+    """
+
+    def __init__(self, level=2):
+        self.level = level
+        self.S1 = np.zeros(2)
+        self.S2 = np.zeros((2, 2))
+
+    def update(self, dt, dx):
+        """Update signature with increment (dt, dx) using Chen's identity."""
+        inc_S1 = np.array([dt, dx])
+        inc_S2 = np.outer(inc_S1, inc_S1) / 2.0
+        self.S2 = self.S2 + inc_S2 + np.outer(self.S1, inc_S1)
+        self.S1 = self.S1 + inc_S1
+
+    def get_levy_area(self):
+        return (self.S2[0, 1] - self.S2[1, 0]) / 2.0
+
+    def get_feature_vector(self):
+        return np.array([
+            self.S1[0], self.S1[1],
+            self.S2[0, 0], self.S2[0, 1], self.S2[1, 0], self.S2[1, 1],
+            self.get_levy_area(),
+        ])
+
+
+def compute_cumulative_signature_features(returns, dt=1/252):
+    """
+    Compute signature DERIVATIVES (local features from cumulative signature).
+
+    Key insight: Use dS/dt to capture LOCAL dynamics while using GLOBAL path info.
+    """
+    n = len(returns)
+    features = []
+    sig = CumulativeSignatureState(level=2)
+    prev_features = None
+    window = 20
+    recent_sq_returns = []
+
+    for t in range(n):
+        sig.update(dt, returns[t])
+        recent_sq_returns.append(returns[t]**2)
+        if len(recent_sq_returns) > window:
+            recent_sq_returns.pop(0)
+
+        current_features = sig.get_feature_vector()
+
+        if prev_features is not None and t >= window:
+            dsig = current_features - prev_features
+            local_qv = np.mean(recent_sq_returns) * 252
+            local_std = np.std(recent_sq_returns) if len(recent_sq_returns) > 1 else 0
+
+            feat = np.array([
+                1.0,
+                current_features[6],  # Lévy area
+                current_features[5],  # cumulative QV
+                dsig[1],  # d(return)/dt
+                dsig[5],  # d(QV)/dt
+                dsig[6],  # d(Lévy area)/dt
+                local_qv,
+                returns[t]**2 * 252,
+                local_std,
+                dsig[5] * np.sign(dsig[6]),
+            ])
+        else:
+            feat = np.zeros(10)
+
+        features.append(feat)
+        prev_features = current_features.copy()
+
+    return np.array(features)
+
+
+def _estimate_volatility_simple(returns, n_prices, train_frac=0.3):
+    """Simple rolling volatility estimator."""
+    n = len(returns)
+    window = 20
+    v_hat = np.zeros(n)
+    for t in range(n):
+        if t < window:
+            v_hat[t] = np.mean(returns[:t+1]**2) * 252 if t > 0 else 0.04
+        else:
+            v_hat[t] = np.mean(returns[t-window:t]**2) * 252
+    pad_length = n_prices - n
+    v_hat_full = np.concatenate([np.full(pad_length, v_hat[0]), v_hat])
+    return np.maximum(v_hat_full, 1e-4)
+
+
+def estimate_volatility_sigkkf(returns, n_prices, train_frac=0.3, use_kernel=False):
+    """
+    Estimate volatility using cumulative signature derivatives.
+
+    Uses Chen's identity for O(1) signature updates, then extracts
+    signature DERIVATIVES (dS/dt) as local features for regression.
     """
     n = len(returns)
     train_end = int(n * train_frac)
-
-    # Features: local path statistics
     window = 20
-    features = []
 
-    for t in range(n):
-        if t < window:
-            feat = [0, 0, 0, 0, 0]
-        else:
-            recent = returns[t-window:t]
-            feat = [
-                1.0,  # bias
-                np.mean(recent),  # recent drift
-                np.std(recent),  # recent vol
-                np.sum(recent**2),  # realized variance
-                np.mean(recent**2) - np.mean(recent)**2,  # variance of returns
-            ]
-        features.append(feat)
+    # Compute cumulative signature features
+    features = compute_cumulative_signature_features(returns)
 
-    features = np.array(features)
-
-    # Target: realized variance (noisy proxy for true variance)
+    # Target: realized variance
     rv_window = 10
     realized_var = np.zeros(n)
     for t in range(rv_window, n):
-        realized_var[t] = np.mean(returns[t-rv_window:t]**2) * 252  # annualized
+        realized_var[t] = np.mean(returns[t-rv_window:t]**2) * 252
 
-    # Train on first portion
+    # Train
     X_train = features[window:train_end]
     y_train = realized_var[window:train_end]
+
+    valid_mask = np.isfinite(X_train).all(axis=1) & np.isfinite(y_train)
+    X_train = X_train[valid_mask]
+    y_train = y_train[valid_mask]
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
 
-    model = Ridge(alpha=1.0)
+    from sklearn.linear_model import RidgeCV
+    model = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 100.0], cv=5)
     model.fit(X_train_scaled, y_train)
 
     # Predict
@@ -131,17 +213,10 @@ def estimate_volatility_sigkkf(returns, n_prices, train_frac=0.3):
     X_all_scaled = scaler.transform(X_all)
     v_hat = model.predict(X_all_scaled)
 
-    # Pad with initial values to match n_prices
-    # returns has length n_prices - 1, X_all has length n - window = n_prices - 1 - window
-    # So v_hat has length n_prices - 1 - window
-    # We need to pad to get n_prices elements
+    # Pad
     pad_length = n_prices - len(v_hat)
-    v_hat_full = np.concatenate([np.full(pad_length, v_hat[0]), v_hat])
-
-    # Ensure positive
-    v_hat_full = np.maximum(v_hat_full, 1e-4)
-
-    return v_hat_full
+    v_hat_full = np.concatenate([np.full(pad_length, max(v_hat[0], 0.01)), v_hat])
+    return np.maximum(v_hat_full, 1e-4)
 
 
 # ============================================================================
@@ -221,13 +296,12 @@ def compute_metrics(W, gamma=2.0, rf_rate=0.02, dt=1/252):
     # Sharpe ratio (annualized)
     sharpe = (annual_return - rf_rate) / (vol + 1e-9)
 
-    # Certainty equivalent (for CRRA utility)
-    # CE is the certain wealth that gives same utility as terminal wealth
+    # CRRA utility value (for aggregation across trials)
+    # U(W) = W^(1-γ)/(1-γ) for γ ≠ 1, or log(W) for γ = 1
     if gamma == 1:
-        ce = terminal  # Log utility
+        utility = np.log(terminal)
     else:
-        # For a single terminal wealth, CE = terminal wealth
-        ce = terminal
+        utility = (terminal ** (1 - gamma)) / (1 - gamma)
 
     # Max drawdown
     peak = np.maximum.accumulate(W)
@@ -237,7 +311,7 @@ def compute_metrics(W, gamma=2.0, rf_rate=0.02, dt=1/252):
     return {
         'terminal_wealth': terminal,
         'sharpe': sharpe,
-        'certainty_equivalent': ce,
+        'utility': utility,  # CRRA utility value
         'max_drawdown': max_dd,
         'volatility': vol
     }
@@ -265,7 +339,7 @@ def run_experiment(n_trials=50, n_steps=1000, gamma=2.0, theta=0.04):
         v_constant = np.full(n_steps, theta)
         # CHEAT: Use in-sample mean (look-ahead bias - for comparison only)
         v_constant_cheat = np.full(n_steps, np.mean(v_true))
-        v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
+        v_sigkkf = estimate_volatility_sigkkf(returns, n_steps, use_kernel=True)
 
         # Run portfolios
         W_oracle, _ = simulate_portfolio(S, v_true, gamma=gamma)
@@ -290,6 +364,14 @@ def run_experiment(n_trials=50, n_steps=1000, gamma=2.0, theta=0.04):
             metric: np.std([r[metric] for r in results[strategy]])
             for metric in results[strategy][0].keys()
         }
+        # Compute certainty equivalent from expected utility
+        # CE = ((1-γ) * E[U])^(1/(1-γ)) for γ ≠ 1
+        # CE = exp(E[log(W)]) for γ = 1
+        expected_utility = summary[strategy]['utility']
+        if gamma == 1:
+            summary[strategy]['certainty_equivalent'] = np.exp(expected_utility)
+        else:
+            summary[strategy]['certainty_equivalent'] = ((1 - gamma) * expected_utility) ** (1 / (1 - gamma))
 
     return summary, results
 
@@ -309,7 +391,7 @@ def create_merton_figure():
     S, v_true, returns = simulate_heston(n_steps=n_steps)
     # FAIR: Use theta (known model parameter), not in-sample mean
     v_constant = np.full(n_steps, theta)
-    v_sigkkf = estimate_volatility_sigkkf(returns, n_steps)
+    v_sigkkf = estimate_volatility_sigkkf(returns, n_steps, use_kernel=True)
 
     t = np.arange(n_steps) / 252  # Years
 

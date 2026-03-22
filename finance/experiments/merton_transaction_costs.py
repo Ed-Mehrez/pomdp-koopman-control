@@ -219,8 +219,8 @@ def simulate_portfolio_with_costs(S, v_used, transaction_cost=0.001,
 # 5. Metrics
 # ============================================================================
 
-def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02):
-    """Compute portfolio metrics."""
+def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02, gamma=2.0):
+    """Compute portfolio metrics including CRRA utility."""
     returns = np.diff(W) / W[:-1]
     terminal = W[-1]
 
@@ -232,6 +232,12 @@ def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02):
 
     sharpe = (annual_return - rf_rate) / (vol + 1e-9)
 
+    # CRRA utility value
+    if gamma == 1:
+        utility = np.log(terminal)
+    else:
+        utility = (terminal ** (1 - gamma)) / (1 - gamma)
+
     peak = np.maximum.accumulate(W)
     drawdown = (peak - W) / peak
     max_dd = np.max(drawdown)
@@ -239,6 +245,7 @@ def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02):
     return {
         'terminal_wealth': terminal,
         'sharpe': sharpe,
+        'utility': utility,
         'max_drawdown': max_dd,
         'volatility': vol,
         'n_trades': np.sum(trades),
@@ -250,7 +257,7 @@ def compute_metrics(W, trades, total_costs, dt=1/252, rf_rate=0.02):
 # 6. Main Experiment
 # ============================================================================
 
-def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001, theta=0.04):
+def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001, theta=0.04, gamma=2.0):
     """Run multiple trials comparing strategies with transaction costs."""
 
     strategies = {
@@ -278,7 +285,7 @@ def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001, theta=0.04
                 S, v_used, transaction_cost=transaction_cost,
                 strategy=config['strategy']
             )
-            metrics = compute_metrics(W, trades, costs)
+            metrics = compute_metrics(W, trades, costs, gamma=gamma)
             results[name].append(metrics)
 
     # Aggregate
@@ -288,6 +295,12 @@ def run_experiment(n_trials=50, n_steps=1000, transaction_cost=0.001, theta=0.04
             metric: np.mean([r[metric] for r in results[name]])
             for metric in results[name][0].keys()
         }
+        # Compute certainty equivalent from expected utility
+        expected_utility = summary[name]['utility']
+        if gamma == 1:
+            summary[name]['certainty_equivalent'] = np.exp(expected_utility)
+        else:
+            summary[name]['certainty_equivalent'] = ((1 - gamma) * expected_utility) ** (1 / (1 - gamma))
 
     return summary, results
 

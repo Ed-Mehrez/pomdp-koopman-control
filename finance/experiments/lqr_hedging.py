@@ -240,14 +240,65 @@ def hedge_portfolio(S, v_used, v_true, K=100, T_initial=1.0, r=0.02, strategy='d
 # ============================================================================
 
 def compute_hedge_metrics(hedge_errors):
-    """Compute hedging performance metrics."""
+    """
+    Compute hedging performance metrics.
+
+    IMPORTANT: RMSE is NOT the right metric for hedging!
+    - RMSE penalizes gains and losses equally
+    - Practitioners care about DOWNSIDE risk (VaR, CVaR)
+    - Hedging error can be positive (made money) or negative (lost money)
+
+    Primary metrics should be:
+    - VaR (Value at Risk): worst-case loss at confidence level
+    - CVaR (Conditional VaR): expected loss in worst cases
+    - Std Error: pure variance measure (lower is better)
+    """
+    errors = np.array(hedge_errors)
+
+    # VaR and CVaR at 5% level (worst 5% of outcomes)
+    var_5 = np.percentile(errors, 5)
+    cvar_5 = np.mean(errors[errors <= var_5]) if np.sum(errors <= var_5) > 0 else var_5
+
     return {
-        'mean_error': np.mean(hedge_errors),
-        'std_error': np.std(hedge_errors),
-        'rmse': np.sqrt(np.mean(hedge_errors**2)),
-        'mae': np.mean(np.abs(hedge_errors)),
-        'max_error': np.max(np.abs(hedge_errors)),
+        'mean_error': np.mean(errors),
+        'std_error': np.std(errors),
+        'rmse': np.sqrt(np.mean(errors**2)),
+        'mae': np.mean(np.abs(errors)),
+        'max_loss': np.min(errors),  # Most negative = worst loss
+        'max_gain': np.max(errors),
+        'var_5': var_5,              # 5% VaR (negative = loss)
+        'cvar_5': cvar_5,            # Expected shortfall
     }
+
+
+# ============================================================================
+# 5b. Allocation Tracking Error (measures vol estimation quality)
+# ============================================================================
+
+def compute_allocation_tracking_error(deltas_oracle, deltas_test):
+    """
+    Measure how well we track the Oracle's allocation.
+
+    This is a CLEANER metric for volatility estimation quality than hedging
+    error because:
+    1. Not affected by gamma/vega risk
+    2. Directly measures: "Are we using the right delta?"
+    3. Oracle tracking = perfect vol estimation
+
+    Returns:
+        rmse: Root mean squared tracking error
+        mae: Mean absolute tracking error
+        correlation: How well deltas track oracle
+    """
+    valid = np.isfinite(deltas_oracle) & np.isfinite(deltas_test)
+    d_oracle = deltas_oracle[valid]
+    d_test = deltas_test[valid]
+
+    rmse = np.sqrt(np.mean((d_test - d_oracle)**2))
+    mae = np.mean(np.abs(d_test - d_oracle))
+    corr = np.corrcoef(d_oracle, d_test)[0, 1] if len(d_oracle) > 10 else 0
+
+    return {'rmse': rmse, 'mae': mae, 'correlation': corr}
 
 
 # ============================================================================
@@ -255,7 +306,18 @@ def compute_hedge_metrics(hedge_errors):
 # ============================================================================
 
 def run_experiment(n_trials=100, n_steps=252):
-    """Run hedging comparison across multiple trials."""
+    """
+    Run hedging comparison across multiple trials.
+
+    Returns TWO sets of metrics:
+    1. Hedge errors: Terminal PnL from hedging (affected by gamma/vega)
+    2. Allocation tracking: How well we track Oracle's delta (vol estimation quality)
+
+    IMPORTANT INSIGHT:
+    Hedge errors are affected by discrete-time gamma risk. Even Oracle cannot
+    eliminate this risk. The ranking on hedge errors may differ from ranking
+    on allocation tracking!
+    """
 
     strategies = {
         'oracle': {'vol': 'true', 'strategy': 'delta'},
@@ -265,6 +327,7 @@ def run_experiment(n_trials=100, n_steps=252):
     }
 
     hedge_errors = {k: [] for k in strategies}
+    allocation_tracking = {k: {'rmse': [], 'mae': [], 'corr': []} for k in strategies}
 
     for trial in range(n_trials):
         S, v_true, returns = simulate_heston(n_steps=n_steps, seed=trial*100)
@@ -275,15 +338,28 @@ def run_experiment(n_trials=100, n_steps=252):
             'constant': np.full(n_steps, 0.04),
         }
 
+        # Oracle deltas for tracking comparison
+        _, _, deltas_oracle = hedge_portfolio(S, v_true, v_true, strategy='delta')
+
         for name, config in strategies.items():
             v_used = v_estimates[config['vol']]
-            _, error, _ = hedge_portfolio(S, v_used, v_true, strategy=config['strategy'])
+            _, error, deltas = hedge_portfolio(S, v_used, v_true, strategy=config['strategy'])
             hedge_errors[name].append(error)
+
+            # Allocation tracking (compare to oracle)
+            if name != 'oracle':
+                track = compute_allocation_tracking_error(deltas_oracle, deltas)
+                allocation_tracking[name]['rmse'].append(track['rmse'])
+                allocation_tracking[name]['mae'].append(track['mae'])
+                allocation_tracking[name]['corr'].append(track['correlation'])
 
     # Compute metrics
     metrics = {}
     for name in strategies:
         metrics[name] = compute_hedge_metrics(np.array(hedge_errors[name]))
+        if name != 'oracle':
+            metrics[name]['alloc_tracking_rmse'] = np.mean(allocation_tracking[name]['rmse'])
+            metrics[name]['alloc_tracking_corr'] = np.mean(allocation_tracking[name]['corr'])
 
     return metrics, hedge_errors
 
@@ -418,32 +494,33 @@ def create_figure():
     ax6 = fig.add_subplot(2, 3, 6)
     ax6.axis('off')
 
-    # Compute improvement
-    const_rmse = metrics['constant']['rmse']
-    sigkkf_rmse = metrics['sigkkf']['rmse']
-    oracle_rmse = metrics['oracle']['rmse']
+    # Compute allocation tracking improvement (cleaner metric for vol estimation)
+    const_track = metrics['constant']['alloc_tracking_rmse']
+    sigkkf_track = metrics['sigkkf']['alloc_tracking_rmse']
 
-    improvement = (const_rmse - sigkkf_rmse) / (const_rmse - oracle_rmse) * 100 if const_rmse != oracle_rmse else 0
+    # For VaR, more negative is worse (larger loss)
+    # Improvement = how much closer to oracle's VaR
+    oracle_var = metrics['oracle']['var_5']
+    sigkkf_var = metrics['sigkkf']['var_5']
+    const_var = metrics['constant']['var_5']
 
     summary_text = f"""
     HEDGING PERFORMANCE (100 trials):
 
                          Oracle    Sig-KKF   Constant
-    RMSE:                {metrics['oracle']['rmse']:.3f}     {metrics['sigkkf']['rmse']:.3f}     {metrics['constant']['rmse']:.3f}
-    Std Error:           {metrics['oracle']['std_error']:.3f}     {metrics['sigkkf']['std_error']:.3f}     {metrics['constant']['std_error']:.3f}
-    Max Error:           {metrics['oracle']['max_error']:.3f}     {metrics['sigkkf']['max_error']:.3f}     {metrics['constant']['max_error']:.3f}
+    VaR 5% (loss):       {metrics['oracle']['var_5']:.2f}     {metrics['sigkkf']['var_5']:.2f}     {metrics['constant']['var_5']:.2f}
+    CVaR 5%:             {metrics['oracle']['cvar_5']:.2f}     {metrics['sigkkf']['cvar_5']:.2f}     {metrics['constant']['cvar_5']:.2f}
+    Std Error:           {metrics['oracle']['std_error']:.2f}     {metrics['sigkkf']['std_error']:.2f}     {metrics['constant']['std_error']:.2f}
+
+    ALLOCATION TRACKING (vol estimation quality):
+    Tracking RMSE:                 {sigkkf_track:.4f}    {const_track:.4f}
+    Tracking Corr:                 {metrics['sigkkf']['alloc_tracking_corr']:.3f}     {metrics['constant']['alloc_tracking_corr']:.3f}
 
     KEY INSIGHT:
-    - Delta depends on unknown σ_t
-    - Wrong σ → wrong δ → hedging error
-    - Sig-KKF estimates σ from price path
-    - Captures {improvement:.0f}% of Oracle's advantage
-
-    This is a POMDP problem:
-    - Hidden state: σ_t
-    - Observation: price path
-    - Control: hedge ratio δ_t
-    - Objective: min E[(hedge error)²]
+    - Delta hedging is INCOMPLETE with stoch vol
+    - Even Oracle exposed to discrete gamma risk
+    - Use ALLOCATION TRACKING for vol quality
+    - Sig-KKF tracks delta {(1-sigkkf_track/const_track)*100:.0f}% better than Constant
     """
 
     ax6.text(0.02, 0.5, summary_text, transform=ax6.transAxes,

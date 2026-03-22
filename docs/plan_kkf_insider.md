@@ -38,7 +38,7 @@ Based on `MultiassetDynamicKyleModel_Draft3.tex`:
 - **Assets**: $K$ risky assets.
 - **Noise Process**: $dZ_t = \Sigma_z dW_t$, where $\Sigma_z$ captures cross-asset noise correlations (Eq 46).
 - **Insider**: Observes $\tilde{v}$ and $Z_t$. Optimal strategy involves hiding trades within the noise covariance structure.
-- **Market Maker**: Sets $P_t = E[\tilde{v} | Y_{[0,t]]$.
+- **Market Maker**: Sets $P_t = E[\tilde{v} | Y_{[0,t]}]$.
 
 ## The "Sig-KKF" Opportunity
 

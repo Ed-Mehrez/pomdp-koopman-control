@@ -420,25 +420,184 @@ rather than analytically. ∎
 
 ---
 
-## 8. Summary of Main Results
+## 8. Connection to Financial Bubbles
+
+**⚠️ WARNING**: Most bubble detection criteria in the "bubble birth" documents are
+**unverified or incorrect**. Only the Dandapani-Protter characterization below is
+established in the published literature.
+
+### Definition 8.1 (Strict Local Martingale / Bubble)
+A price process $S_t$ is a **bubble** if it is a strict local martingale under
+the risk-neutral measure $\mathbb{Q}$: a local martingale that is NOT a true
+martingale, i.e., $\mathbb{E}_\mathbb{Q}[S_t] < S_0$ for some $t > 0$.
+
+### Theorem 8.2 (Khasminskii Non-Explosion Criterion — ESTABLISHED)
+For a diffusion $dX_t = b(X_t)dt + \sigma(X_t)dW_t$ with generator:
+$$\mathcal{L}V = \sum_i b_i \frac{\partial V}{\partial x_i} + \frac{1}{2}\sum_{i,j}(\sigma\sigma^T)_{ij}\frac{\partial^2 V}{\partial x_i \partial x_j}$$
+
+The process **does NOT explode** if there exists a Lyapunov function $V$ and $\lambda > 0$ such that:
+$$\mathcal{L}V - \lambda V \leq 0$$
+
+**Contrapositive**: The process CAN explode (bubble possible) if NO such Lyapunov
+function exists.
+
+### Theorem 8.3 (Dandapani-Protter 2019 — THE BUBBLE CONNECTION)
+A nonnegative local martingale $M_t$ is a **strict local martingale** (bubble)
+if and only if it **explodes under a changed measure** $P_j$.
+
+This connects bubbles to Khasminskii's test: bubble ⟺ Khasminskii condition fails
+under the appropriate probability measure.
+
+### Corollary 8.4 (CEV Bubble Threshold — Established)
+For CEV process $dS = \mu S dt + \sigma S^\gamma dW$:
+- $\gamma \leq 1$: True martingale (no bubble)
+- $\gamma > 1$: Strict local martingale (**bubble**)
+
+In parameterization $dS = \mu S dt + \sigma S^{\beta/2} dW$: bubble iff $\beta > 2$.
+
+This follows from Feller's test for explosions applied to the time-changed process.
+See Andersen & Piterbarg (2007), Delbaen & Shirakawa (2002).
+
+### What is NOT Established
+
+**All of the following criteria from the "bubble birth" documents are UNVERIFIED:**
+
+1. **Koopman eigenvalue $|\lambda| > 1$ ⟺ bubble**: FALSE
+   - GBM counterexample: $\mathbb{E}[S_t] = S_0 e^{\mu t}$ grows exponentially but never explodes
+   - Exponential growth of observables ≠ finite-time explosion
+
+2. **Volatility elasticity $\eta > 1$ ⟺ bubble**: INCONSISTENT
+   - Formula $\eta = (\beta-2)/2$ gives $\eta > 1$ when $\beta > 4$
+   - But established threshold is $\beta > 2$ (not $\beta > 4$)
+   - Factor-of-2 error or wrong criterion threshold
+
+3. **QV growth rate $\gamma(q) > 2$ ⟺ bubble**: DERIVED FROM ABOVE
+   - Depends on elasticity formula which has inconsistencies
+   - The "> 2" threshold may be wrong
+
+### Signature Growth vs Bubbles
+
+Our signature growth rate $\gamma(X)$ detects **non-ergodicity**, NOT bubbles:
+
+| Process | Signature $\gamma(X)$ | Bubble? |
+|---------|----------------------|---------|
+| OU | Finite | No |
+| GBM | Infinite | **No** |
+| CEV $\beta > 2$ | Infinite | **Yes** |
+
+**Key distinction**:
+- Non-ergodic: No stationary distribution (GBM and CEV $\beta > 2$)
+- Bubble: Explodes under changed measure (only CEV $\beta > 2$)
+
+GBM is non-ergodic but NOT a bubble. These are different properties.
+
+### Signature-Based Bubble Test: IMPLEMENTED AND VALIDATED
+
+We developed a signature-based bubble test that connects to the Jarrow-Protter
+framework through the QV scaling exponent.
+
+**Method (Lead-Lag Signature)**:
+1. Divide price path into non-overlapping windows
+2. For each window, compute the **lead-lag log-signature**
+3. The Lévy area between lead and lag channels = $\Sigma(\Delta S)^2$ = QV
+4. Regress $\log(\text{QV})$ vs $\log(\bar{S})$ where $\bar{S}$ is mean price
+5. **Bubble $\Leftrightarrow \alpha > 2$** where $\alpha$ is the regression slope
+
+**Critical insight**: The plain (time, price) Lévy area does NOT capture QV.
+The lead-lag transform is essential: it creates a 2D path where the
+antisymmetric area equals the quadratic variation.
+
+**Validation on CEV processes** $dS = \mu S dt + \sigma S^{\beta/2} dW$:
+
+| $\beta$ | True Status | $\hat{\alpha}$ | Detection | Result |
+|---------|-------------|----------------|-----------|--------|
+| 1.5 | NO BUBBLE | 1.49±0.08 | 0% | ✓ |
+| 2.0 | NO BUBBLE | 2.00±0.09 | 0% | ✓ |
+| 2.5 | BUBBLE | 2.52±0.02 | 100% | ✓ |
+| 3.0 | BUBBLE | 3.07±0.03 | 100% | ✓ |
+
+The test achieves $R^2 > 0.9$ with perfect classification. This provides a
+**signature-based implementation** of the Khasminskii/Dandapani-Protter criterion.
+
+**Implementation**: `kronic_pomdp/utils/stationarity_transforms.py`:
+- `signature_bubble_test()`: Main test function
+- `simulate_cev()`: CEV process simulator
+- `validate_bubble_test()`: Validation harness
+
+### Recommendation
+
+For bubble detection, use **only the Khasminskii/Dandapani-Protter framework**:
+1. Does the process explode under a changed measure?
+2. For CEV: is $\gamma > 1$ (equivalently $\beta > 2$)?
+3. **Practical test**: Lead-lag signature QV scaling with $\alpha > 2$
+
+All Koopman-based criteria (eigenvalues, growth rates, eigenfunctions) remain
+**research questions** without rigorous theoretical foundation.
+
+---
+
+## 9. Summary of Main Results
+
+### Established Results (Sections 1-7)
+
+| Result | Statement | Status |
+|--------|-----------|--------|
+| Prop 2.1 | Lyapunov condition $\Rightarrow$ ergodicity | ✓ Established |
+| Prop 3.1 | Ergodicity $\Leftrightarrow$ bounded $\gamma(X)$ | ✓ Established |
+| Prop 4.2 | Log transform makes GBM ergodic-like | ✓ Established |
+| Thm 4.6 | Optimal $g^* = \arg\min_g \gamma(g(X))$ | ✓ Established |
+| Prop 5.3 | MDL objective: $J = \sum T_i \gamma_i + \frac{1}{2}\log(T) \cdot K$ | ✓ Established |
+| Cor 5.4 | Penalty $\lambda_{\text{seg}} = \frac{1}{2}\log(T)$ | ✓ Established |
+
+### Bubble Connection (Section 8)
+
+**ESTABLISHED (Khasminskii/Dandapani-Protter)**:
 
 | Result | Statement |
 |--------|-----------|
-| Prop 2.1 | Lyapunov condition $\Rightarrow$ ergodicity |
-| Prop 3.1 | Ergodicity $\Leftrightarrow$ bounded $\gamma(X)$ |
-| Prop 4.2 | Log transform makes GBM ergodic-like |
-| Thm 4.6 | Optimal $g^* = \arg\min_g \gamma(g(X))$ |
-| Prop 5.3 | MDL objective: $J = \sum T_i \gamma_i + \frac{1}{2}\log(T) \cdot K$ |
-| Cor 5.4 | Penalty $\lambda_{\text{seg}} = \frac{1}{2}\log(T)$ |
+| Thm 8.2 | No explosion iff ∃ Lyapunov V with $\mathcal{L}V - \lambda V \leq 0$ |
+| Thm 8.3 | Bubble ⟺ explosion under changed measure |
+| Cor 8.4 | CEV with γ > 1 (β > 2) is a bubble |
+| **Test 8.5** | Lead-lag signature: bubble ⟺ QV scaling α > 2 (**VALIDATED**) |
+
+**UNVERIFIED (from bubble birth documents)**:
+
+| Claim | Issue |
+|-------|-------|
+| Koopman $\|\lambda\| > 1$ ⟺ Bubble | **FALSE** — GBM counterexample |
+| Volatility elasticity $\eta > 1$ ⟺ Bubble | Inconsistent formulas |
+| QV growth rate $\gamma > 2$ ⟺ Bubble | Derived from inconsistent elasticity |
+| Signature growth $\gamma(X) = \infty$ ⟺ Bubble | **FALSE** — GBM is non-ergodic but not a bubble |
+
+### Key Distinction
+
+- **Non-ergodic** (signature $\gamma = \infty$): Process doesn't have stationary distribution
+- **Bubble** (strict local martingale): Khasminskii condition fails ⟺ explosion under Q
+
+GBM is non-ergodic but NOT a bubble. These are different concepts.
 
 ---
 
 ## References
 
+### Ergodicity and Stochastic Stability
 1. Meyn, S.P. and Tweedie, R.L. (1993). *Markov Chains and Stochastic Stability*. Springer.
-2. Hambly, B. and Lyons, T. (2010). "Uniqueness for the signature of a path of bounded variation." *Ann. Math.* 171(1), 109-167.
-3. Chevyrev, I. and Lyons, T. (2016). "Characteristic functions of measures on geometric rough paths." *Ann. Probab.* 44(6), 4049-4082.
-4. Hida, T. (1980). *Brownian Motion*. Springer.
-5. Nualart, D. (2006). *The Malliavin Calculus and Related Topics*. Springer.
-6. Rissanen, J. (1978). "Modeling by shortest data description." *Automatica* 14, 465-471.
-7. Box, G.E.P. and Cox, D.R. (1964). "An analysis of transformations." *J. R. Stat. Soc. B* 26(2), 211-252.
+2. Khasminskii, R. (2012). *Stochastic Stability of Differential Equations*. Springer.
+3. Oseledets, V.I. (1968). "A multiplicative ergodic theorem. Characteristic Lyapunov exponents of dynamical systems." *Trans. Moscow Math. Soc.* 19, 197-231.
+
+### Signatures and Rough Paths
+4. Hambly, B. and Lyons, T. (2010). "Uniqueness for the signature of a path of bounded variation." *Ann. Math.* 171(1), 109-167.
+5. Chevyrev, I. and Lyons, T. (2016). "Characteristic functions of measures on geometric rough paths." *Ann. Probab.* 44(6), 4049-4082.
+
+### White Noise and Malliavin Calculus
+6. Hida, T. (1980). *Brownian Motion*. Springer.
+7. Nualart, D. (2006). *The Malliavin Calculus and Related Topics*. Springer.
+
+### Information Theory and Model Selection
+8. Rissanen, J. (1978). "Modeling by shortest data description." *Automatica* 14, 465-471.
+9. Box, G.E.P. and Cox, D.R. (1964). "An analysis of transformations." *J. R. Stat. Soc. B* 26(2), 211-252.
+
+### Koopman Operators and Financial Bubbles
+10. Koopman, B.O. and von Neumann, J. (1932). "Dynamical systems of continuous spectra." *PNAS* 18(3), 255-263.
+11. Dandapani, A. and Protter, P. (2019). "Strict Local Martingales and the Khasminskii Test for Explosions." *Electron. J. Probab.* 24, 1-18.
+12. Jarrow, R., Protter, P., and Shimbo, K. (2010). "Asset price bubbles in incomplete markets." *Math. Finance* 20(2), 145-185.
