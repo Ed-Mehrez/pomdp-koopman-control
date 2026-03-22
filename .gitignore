@@ -1,1 +1,17 @@
 .env
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+.venv/
+*.so
+.pytest_cache/
+.mypy_cache/
+*.pkl
+*.log
+.claude/
