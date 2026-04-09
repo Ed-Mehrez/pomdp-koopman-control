@@ -33,12 +33,14 @@ dimensionality in Bellman regression.
 - Graduated sanity checks: 5 levels, all pass, 5 macro seeds
 
 **What's needed for submission**:
-1. **Benchmark systems from dynamical systems literature**:
-   - Lorenz-63/96 with partial observations (filtering + control)
-   - Duffing oscillator with stochastic forcing (nonlinear control)
-   - Fluid flow control: cylinder wake stabilization (Brunton & Noack 2015)
-   - Reaction-diffusion system (Peitz & Klus 2019 benchmark)
-   - Double-well potential with noise (standard Koopman test problem)
+1. **Benchmark systems from dynamical systems literature** (start with ONE for v1, expand only after it ships):
+   - **v1 starting point**: Double-well potential with noise — simplest end-to-end
+     test of CdC + KGEDMD + SDRE, has analytic ground truth, standard Koopman benchmark
+   - Deferred to v2+ (do not build until double-well is clean):
+     - Lorenz-63/96 with partial observations (filtering + control)
+     - Duffing oscillator with stochastic forcing
+     - Fluid flow: cylinder wake stabilization (Brunton & Noack 2015)
+     - Reaction-diffusion system (Peitz & Klus 2019 benchmark)
 2. **Comparison with established methods**:
    - EDMD + LQR (Korda & Mezić 2018)
    - Deep Koopman (Lusch, Wehmeyer & Clementi 2018)
@@ -58,6 +60,47 @@ dimensionality in Bellman regression.
    - Framework diagram: observations → signatures → KGEDMD → L_u → SDRE → u*
    - Table: control cost comparison across methods × benchmark systems
    - Theory: bilinear generator structure, CdC identity, SDRE via Itô expansion
+
+6. **Finance application slot** (one application section, NOT the headline, NOT a separate paper):
+   - Option market-making v1: pure Heston simulator, low-dim state `[q, h, V_hat, tau]`
+     where `q` = option inventory, `h` = net delta exposure, `V_hat` = filtered variance,
+     `tau` = time to maturity (decided 2026-04-06 to include tau explicitly so the
+     controller never has its non-stationarity blamed on the policy structure; the
+     env already exposes `time_to_maturity` on `OptionMMState`).
+   - Contract convention: one fixed-strike European call, struck ATM at reset. Episode
+     horizon must be shorter than maturity. No expiry, roll, or re-strike in v1.
+     Default maturity is 1Y (codex's choice); with `tau` in the controller state this
+     is an independent parameter and can be shortened later if a more dynamic `tau`
+     is desired without changing the state spec.
+   - Fill convention: exponential Poisson fills with frozen parameters, no queue
+     dynamics, no market impact. Default same-step bid+ask fills use a conservative
+     `mid_drift` policy to avoid a zero-risk full-spread subsidy. Market-path RNG
+     is separate from fill/tie-break RNGs so paired controllers share the same
+     exogenous Heston path.
+   - CE convention: benchmark configs use positive `initial_cash` (e.g. 100,000)
+     rather than shifting wealth inside the metrics module.
+   - **Gating baseline**: Avellaneda–Stoikov closed form with same `V_hat`. SDRE must
+     beat A-S-with-V_hat under the Bayesian gating rule below or the control framing
+     adds nothing.
+   - **Critical ablation**: SDRE-on-`(q,h,V_hat,tau)` vs linear-inventory-rule-on-`(q,h,V_hat,tau)`
+     (identical state). Isolates control structure from filter contribution.
+   - **Pre-registered primary metric (Bayesian, no frequentist tests per repo rule)**:
+     posterior on `ΔCE = CE_candidate − CE_baseline` from a Bayesian bootstrap (Rubin 1981)
+     over paired seeds, with Dirichlet(1,…,1) weights and the CE functional reweighted
+     directly. **Ship condition**: `P(ΔCE > 0 | data) ≥ 0.95`, equivalently 95%
+     credible interval strictly above zero. Report posterior mean, posterior SD
+     (`sd_post`, NOT SE — see `feedback_bayesian_naming.md`), 95% CrI, and `P(ΔCE > 0)`.
+     Secondary: inventory variance, max DD, net delta exposure RMS, time at inventory limit.
+   - Use the SAME SDRE machinery as the science benchmarks — no finance-specific tuning.
+   - **Honest framing rule**: do not advertise pricing accuracy or IV RMSE. The result
+     is "wealth/inventory control under partial observation," and a clean null
+     ("framework recovers A-S, no improvement at daily freq") is publishable.
+   - **Excluded from v1**: VRP factor (answer-in-the-basis trap), multi-strike,
+     Alpaca replay, dual-control `P·q²` term, learned Koopman lift.
+   - **Fork decision** (revisit later, NOT now): split into a separate repo only if
+     OMM v1 produces a paper-worthy standalone result OR develops genuinely separate
+     infrastructure (Alpaca replay adapters, fill calibration, broker glue, data
+     manifests). Until then OMM lives in `src/applications/option_mm/`.
 
 ### Paper 2: "Signature-Based Filtering for Partially Observed Stochastic Systems"
 
@@ -108,13 +151,123 @@ gradient gives the control correction: ∇h(sig)/h(sig).
 
 ## Immediate Technical TODOs
 
-### Priority 1: Paper 1 — benchmark systems
-- [ ] Implement Lorenz-63 POMDP (observe x₁, control forcing on x₂)
-- [ ] Implement Duffing oscillator with stochastic forcing
-- [ ] Double-well potential: KGEDMD generator vs analytic
-- [ ] EDMD + LQR baseline (Korda & Mezić 2018)
-- [ ] Control cost comparison table across methods × systems
-- [ ] CdC identity verification on each benchmark system
+### Priority 0: Minimal shared core (extract on demand, NOT a framework up front)
+- [ ] `src/control/sdre.py` — tiny local Riccati / Itô-quadratic helper. Only what
+      double-well AND OMM both need. Do NOT design a general SDRE framework.
+- [ ] `src/eval/paired.py` — paired-seed / bootstrap / CE helpers extracted from
+      `kronic_pomdp/experiments/honest_benchmark.py`. Only what both tracks need.
+- [ ] If only one track ends up using a piece, leave it inline in that track. Generalize
+      ONLY when both tracks demonstrably share the same call pattern.
+- [ ] **Quarantine** the broken Kyle / `SignatureState` modules
+      (`src/finance/adaptive_kyle.py`, `adaptive_kyle_kernel.py`,
+      `kronic_pomdp/experiments/online_rbf_sig_belief.py`,
+      `kronic_pomdp/experiments/signature_kronic_control.py`). Mine for formulas only;
+      do NOT put them on the critical path of either track.
+
+### Priority 1: Paper 1 — v1 science benchmark (double-well first)
+- [ ] Double-well potential POMDP: KGEDMD generator vs analytic
+- [ ] CdC identity verification on double-well
+- [ ] EDMD + LQR baseline (Korda & Mezić 2018) on double-well
+- [ ] SDRE controller on double-well using `src/control/sdre.py`
+- [ ] Paired-seed comparison table (KGEDMD-SDRE vs EDMD-LQR vs analytic)
+- [ ] **Stop condition**: ship double-well figure before touching Lorenz/Duffing/fluid
+
+### Priority 1b: Paper 1 — finance application slot (OMM v1, pure simulator)
+
+**Stage 1 — env + smoke (DONE 2026-04-07)**
+- [x] `src/applications/option_mm/env.py` — Heston-only sim, fixed-strike ATM call,
+      `mid_drift` same-step both-fill default, split RNG (`path_rng`/`fill_rng`/`tie_rng`)
+      for paired-seed honesty, censoring + variance-floor monitoring, `net_delta` field.
+- [x] `src/applications/option_mm/metrics.py` — `UtilitySpec` + `crra_utility` +
+      `cara_utility`; `paired_ce_posterior(method="delta"|"mc"|"bootstrap")`;
+      `paired_mean_difference_posterior` (Student-t conjugate);
+      `paired_bayesian_bootstrap_posterior` (general Dirichlet weights, fallback only).
+- [x] `finance/experiments/option_mm_smoke.py` at N=500 — all 10 stage-1 checks PASS.
+      Inventory std grows √T to within 2%. Censoring rate 0. Variance floor binding 0.02%.
+
+**Stage 2 — beliefs (EWMA) + A-S gating (DONE 2026-04-07)**
+- [x] `src/applications/option_mm/beliefs.py` — `EWMAVarianceFilter` only.
+- [x] `src/applications/option_mm/controllers.py` — `no_quote`, `constant_spread`,
+      `avellaneda_stoikov` (strict textbook, no tuning).
+- [x] `finance/experiments/option_mm_gating.py` at **N=5000** (re-spec'd from 500
+      after underpowered initial gate; per-seed SNR ≈ 0.058 needs N ≥ ~810 for
+      `P ≥ 0.95`, N=5000 gives ~4σ margin).
+- [x] **Stage 2 result (locked)**: A-S-with-EWMA beats constant-spread.
+      CRRA(γ=2): ΔCE = 26.97, sd_post = 6.60, CrI [14.03, 39.90], P(>0) = 0.99998.
+      CARA(α=0.001): ΔCE = 84.55, sd_post = 12.30, P(>0) ≈ 1.0 (curvature-driven larger
+      magnitude — α=0.001 puts CARA in a tail-CE regime; for matched Arrow-Pratt to
+      CRRA(γ=2) at W≈1e5 use α≈2e-5 next time). Delta vs MC agreement <1% under
+      both utilities. Spread capture 1.92×, net delta RMS 0.67×, MTM noise 0.68×.
+
+**Stage 3 — filter ablation (DONE 2026-04-07)**
+- [x] Extended `beliefs.py` with `OracleVarianceFilter`, `BootstrapParticleFilter`
+      (200 particles), `RecursiveSigRLSFilter` (lead-lag log-sig + Bayesian RLS).
+- [x] `finance/experiments/option_mm_filter_ablation.py` — A-S with each of
+      {oracle, BPF, RecSig-RLS, EWMA} on the same N=5000 paired seeds and the same
+      `SeedSequence(20260407)` as Stage 2. EWMA−constant contrast reproduces Stage 2
+      number exactly (26.967789 to the digit), confirming wiring correctness.
+- [x] **Stage 3 result (locked)**: filter quality is essentially **saturated**.
+      Total spread among the four filters is 0.138 CE units; total controller gap
+      (EWMA−constant) is 26.97. Filter quality accounts for **0.5%** of the controller
+      advantage. EWMA captures 100.17% of the oracle gap, BPF captures 99.92%,
+      RecSig captures 100.43%. Reproduces the `honest_benchmark.py` finding under
+      controller evaluation: at daily frequency under default Heston params,
+      sophisticated filtering buys essentially nothing in CE terms.
+- [x] **Interesting sub-finding (publishable, not a bug)**: RecSig and EWMA slightly
+      *exceed* oracle in CE (RecSig − BPF = +0.138 ± 0.059, P = 0.99). This is because
+      textbook A-S is mis-specified for stochastic vol — A-S assumes σ² is constant
+      over (T−t), but the optimal σ² to plug in is `E[avg V over (t, T) | F_t]`, a
+      forward-averaged variance. Smoothed filters (RecSig, EWMA) are *closer* to
+      forward-averaged V than instantaneous V_t, so they accidentally compensate
+      for A-S's mis-specification. Cite Cartea & Jaimungal (2015) §5. Not worth
+      chasing for Stage 4 — magnitude is 0.5% of the controller gap.
+
+**Stage 4 — control structure ablation: SDRE vs linear rule (NEXT)**
+- [x] **Filter decision**: Stage 4 uses **EWMA**. Justified by Stage 3 — no measurable
+      filter advantage to anything fancier, and using the simplest filter means
+      SDRE-vs-linear-rule cannot be confounded by filter sophistication.
+- [ ] `src/applications/option_mm/controllers.py` add (d) `linear_inventory_rule`
+      and (e) `sdre_controller` on `(q, h, V_hat, tau)`. Both consume the same EWMA
+      `V_hat`. SDRE uses the Itô-quadratic expansion `E[ΔU] = a + π·b + π²·c`,
+      `π* = -b/(2c)` derived in `kronic_pomdp/experiments/level4_generator_sdre.py`
+      — port the math, do NOT extend the prototype as a framework.
+- [ ] `src/control/sdre.py` (Priority 0 from the framework cleanup) — extract the
+      tiny local Riccati / Itô-quadratic helper from level4 ONLY if both
+      double-well and OMM v4 will call it. Otherwise leave inline in
+      `controllers.py`. Per `feedback_no_framework_up_front.md`.
+- [ ] `finance/experiments/option_mm_ablation.py` — paired bootstrap of SDRE vs
+      linear-rule vs A-S, all consuming EWMA, on the same N=5000 paired seeds and
+      same `SeedSequence(20260407)` as Stages 2 and 3. **Run a power-calc pilot
+      first** at N=100 to estimate per-seed SNR for the SDRE−linear contrast.
+      Per `feedback_power_calc_discipline.md`, do not reuse N from Stage 2/3 blindly.
+- [ ] **Pre-registered Stage 4 ship rule**: `P(ΔCE_SDRE−linear > 0 | data) ≥ 0.95`
+      under CRRA(γ=2) AND CARA(α=2e-5, matched Arrow-Pratt). delta+MC agreement
+      ≤ 5% relative under both utilities. If the gate fails, **do NOT silently
+      bump N** per `feedback_no_silent_n_changes.md` — diagnose, recommend, wait.
+- [ ] **Outcome interpretations**:
+      - SDRE clears gate AND beats A-S in paired ΔCE → control structure adds value.
+      - SDRE ties linear-rule but both beat A-S → win lives in the (q,h,V̂,τ) state
+        space, not the policy structure. **Ship the linear rule.** Publishable null.
+      - SDRE ties A-S → control structure with the same state space adds nothing.
+        Stage 4 is null. Publishable.
+- [ ] **Gaussian-fill validation**: in sim, compare SDRE policy vs exact-Poisson-fill
+      optimum on a smaller scenario set. If gap is large, the diffusion approximation
+      underlying SDRE is solving the wrong problem and SDRE results don't generalize.
+
+**Stage 4 — control structure ablation (DEFERRED until Stage 3 lands)**
+- [ ] `src/applications/option_mm/controllers.py` add (d) `linear_inventory_rule`
+      and (e) `sdre_controller` on `(q,h,V_hat,tau)`. Both consume the *same* filter
+      chosen in Stage 3.
+- [ ] `finance/experiments/option_mm_ablation.py` — paired bootstrap of
+      SDRE vs linear-rule vs A-S, all at N=5000 (or larger if Stage 3 power calc
+      indicates).
+- [ ] **Pre-registered Stage 4 ship rule**: `P(ΔCE_SDRE−linear > 0 | data) ≥ 0.95`
+      under CRRA(γ=2) AND CARA(α=2e-5). If only A-S vs constant_spread shows a gap
+      (i.e., SDRE ties with linear-rule), the win lives in the state space, not the
+      policy structure — that's "ship the linear rule", a clean negative result that
+      is still publishable.
+- [ ] **Gaussian-fill validation**: in sim, compare SDRE policy vs exact-Poisson-fill
+      optimum. If gap is large, the diffusion approximation is solving the wrong problem.
 
 ### Priority 2: Paper 2 — filtering benchmarks
 - [ ] Bearings-only tracking benchmark
