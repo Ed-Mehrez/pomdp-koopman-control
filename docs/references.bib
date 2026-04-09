@@ -138,3 +138,254 @@
   pages={385--407},
   year={1985}
 }
+
+% --- Options market making references (added 2026-04-08 for plan_omm_research.md) ---
+
+@article{bergault2019algorithmic,
+  title={Algorithmic market making for options},
+  author={Bergault, Philippe and Gu{\'e}ant, Olivier},
+  journal={Quantitative Finance},
+  volume={21},
+  number={1},
+  pages={85--97},
+  year={2021},
+  publisher={Taylor \& Francis},
+  note={arXiv:1907.12433, submitted 2019, accepted 2020. Canonical reference for OMM-with-stochastic-vol HJB. Key contribution: vega approximation reduces high-dimensional HJB to a low-dimensional functional equation in (t, nu, vega-portfolio).}
+}
+
+@article{bergault2018closed,
+  title={Closed-form approximations in multi-asset market making},
+  author={Bergault, Philippe and Evangelista, David and Gu{\'e}ant, Olivier and Vieira, Douglas},
+  journal={Applied Mathematical Finance},
+  year={2021},
+  note={arXiv:1810.04383. Perturbative approach approximating the HJB equation by a system of Riccati equations -- the methodological precedent for our SDRE-on-OMM approach.}
+}
+
+@book{gueant2016financial,
+  title={The Financial Mathematics of Market Liquidity: From Optimal Execution to Market Making},
+  author={Gu{\'e}ant, Olivier},
+  year={2016},
+  publisher={CRC Press},
+  series={Chapman \& Hall/CRC Financial Mathematics Series}
+}
+
+@article{gueant2017optimal,
+  title={Optimal market making},
+  author={Gu{\'e}ant, Olivier},
+  journal={Applied Mathematical Finance},
+  volume={24},
+  number={2},
+  pages={112--154},
+  year={2017},
+  publisher={Taylor \& Francis},
+  note={arXiv:1605.01862. General framework for market making, closed-form approximations, predecessor to bergault2019algorithmic.}
+}
+
+@unpublished{elaoud2014stochastic,
+  title={A stochastic control approach for options market making},
+  author={El Aoud, Sofiene and Abergel, Fr{\'e}d{\'e}ric},
+  year={2014},
+  note={HAL preprint hal-01061852. Predecessor to Bergault-Guéant 2019 with explicit P-vs-Q model misspecification framework. Demoted in favor of bergault2019algorithmic.}
+}
+
+% --- Risk-sensitive control / general utility references ---
+
+@book{davis2014risk,
+  title={Risk-Sensitive Investment Management},
+  author={Davis, Mark H. A. and Lleo, S{\'e}bastien},
+  year={2014},
+  publisher={World Scientific},
+  series={Advanced Series on Statistical Science and Applied Probability},
+  volume={19},
+  note={Canonical reference for general utility via local quadratic approximation in continuous-time stochastic control. Key construction: Arrow-Pratt local risk aversion gamma_local(W) = -U''(W)/U'(W) parameterizes the local LQ problem for any smooth utility.}
+}
+
+@article{davis2010risk,
+  title={Risk Sensitive Investment Management with Affine Processes: a Viscosity Approach},
+  author={Davis, Mark H. A. and Lleo, S{\'e}bastien},
+  year={2010},
+  note={arXiv:1003.2521. Journal version of Chapter 4 of davis2014risk. Risk-sensitive HJB with Taylor expansion J = E[F] - (theta/2)Var[F] + O(theta^2) showing the equivalence to mean-variance under local quadratic.}
+}
+
+@article{bielecki1999risk,
+  title={Risk-sensitive dynamic asset management},
+  author={Bielecki, Tomasz R and Pliska, Stanley R},
+  journal={Applied Mathematics and Optimization},
+  volume={39},
+  number={3},
+  pages={337--360},
+  year={1999},
+  publisher={Springer}
+}
+
+% --- SDRE methodology references ---
+
+@inproceedings{cimen2008state,
+  title={State-Dependent Riccati Equation (SDRE) Control: A Survey},
+  author={{\c{C}}imen, Tayfun},
+  booktitle={IFAC Proceedings Volumes},
+  volume={41},
+  number={2},
+  pages={3761--3775},
+  year={2008},
+  publisher={Elsevier},
+  note={Canonical engineering survey on SDRE methodology. SDRE generalizes LQR to nonlinear systems via state-dependent coefficient parameterization.}
+}
+
+@article{cimen2010systematic,
+  title={Systematic and effective design of nonlinear feedback controllers via the state-dependent Riccati equation (SDRE) method},
+  author={{\c{C}}imen, Tayfun},
+  journal={Annual Reviews in Control},
+  volume={34},
+  number={1},
+  pages={32--51},
+  year={2010},
+  publisher={Elsevier}
+}
+
+@article{beard1997galerkin,
+  title={Galerkin approximations of the generalized Hamilton-Jacobi-Bellman equation},
+  author={Beard, Randal W and Saridis, George N and Wen, John T},
+  journal={Automatica},
+  volume={33},
+  number={12},
+  pages={2159--2177},
+  year={1997},
+  publisher={Elsevier}
+}
+
+% --- Algorithmic trading textbook ---
+
+@book{cartea2015algorithmic,
+  title={Algorithmic and High-Frequency Trading},
+  author={Cartea, {\'A}lvaro and Jaimungal, Sebastian and Penalva, Jos{\'e}},
+  year={2015},
+  publisher={Cambridge University Press},
+  series={Mathematics, Finance and Risk},
+  note={Standard textbook for algorithmic trading and market making. Chapter 10 covers MM under various utility frameworks.}
+}
+
+% --- Deep RL hedging (for Stage 6 comparison) ---
+
+@article{buehler2024deep,
+  title={Deep Bellman Hedging},
+  author={Buehler, Hans and Murray, Phillip and Wood, Ben},
+  journal={arXiv preprint},
+  year={2024},
+  note={arXiv:2207.00932. Actor-critic deep RL for portfolio hedging with monetary utility (OCE) framework. Stage 6 comparison target. Personal contact: Hans Buehler at JP Morgan.}
+}
+
+@article{buehler2019deep,
+  title={Deep hedging},
+  author={Buehler, Hans and Gonon, Lukas and Teichmann, Josef and Wood, Ben},
+  journal={Quantitative Finance},
+  volume={19},
+  number={8},
+  pages={1271--1291},
+  year={2019},
+  publisher={Taylor \& Francis}
+}
+
+@article{benTal2007old,
+  title={An old-new concept of convex risk measures: The optimized certainty equivalent},
+  author={Ben-Tal, Aharon and Teboulle, Marc},
+  journal={Mathematical Finance},
+  volume={17},
+  number={3},
+  pages={449--476},
+  year={2007},
+  publisher={Wiley Online Library},
+  note={Original paper introducing the OCE (Optimized Certainty Equivalent) monetary utility class. Used by buehler2024deep as the canonical risk-adjusted utility framework. CRRA and CARA are both special cases.}
+}
+
+% --- Cartea-Jaimungal extension ---
+
+@article{cartea2014buy,
+  title={Buy low, sell high: A high frequency trading perspective},
+  author={Cartea, {\'A}lvaro and Jaimungal, Sebastian and Ricci, Jason},
+  journal={SIAM Journal on Financial Mathematics},
+  volume={5},
+  number={1},
+  pages={415--444},
+  year={2014},
+  publisher={SIAM}
+}
+
+@article{cartea2015risk,
+  title={Risk metrics and fine tuning of high-frequency trading strategies},
+  author={Cartea, {\'A}lvaro and Jaimungal, Sebastian},
+  journal={Mathematical Finance},
+  volume={25},
+  number={3},
+  pages={576--611},
+  year={2015},
+  publisher={Wiley Online Library}
+}
+
+% --- Alternative classical SV models for Stage 5 (added 2026-04-08) ---
+
+@article{heston1997simple,
+  title={A simple new formula for options with stochastic volatility},
+  author={Heston, Steven L},
+  journal={Course Notes (Washington University in St. Louis)},
+  year={1997},
+  note={Original 3/2 model paper. Variance follows dV = κV(θ-V)dt + ξV^(3/2) dW. Note: this is NOT the same as Heston (1993) which is the standard square-root variance model.}
+}
+
+@article{lewis2000option,
+  title={Option Valuation under Stochastic Volatility: With Mathematica Code},
+  author={Lewis, Alan L},
+  year={2000},
+  publisher={Finance Press},
+  note={Comprehensive treatment of stochastic volatility option pricing including the 3/2 model. Standard reference for the 3/2 model in the OMM-relevant literature.}
+}
+
+@article{carr2007new,
+  title={A new approach for option pricing under stochastic volatility},
+  author={Carr, Peter and Sun, Jian},
+  journal={Review of Derivatives Research},
+  volume={10},
+  number={2},
+  pages={87--150},
+  year={2007},
+  publisher={Springer},
+  note={Characteristic function for the 3/2 model, enabling Fourier-based option pricing. Cite for Stage 5 3/2 env implementation.}
+}
+
+@incollection{hagan2002managing,
+  title={Managing smile risk},
+  author={Hagan, Patrick S and Kumar, Deep and Lesniewski, Andrew S and Woodward, Diana E},
+  booktitle={Wilmott Magazine},
+  pages={84--108},
+  year={2002},
+  note={The original SABR model paper. Provides the asymptotic implied volatility expansion (Hagan formula) used to price options under SABR. Standard reference for FX and rates options. dF = αF^β dW1, dα = να dW2, with correlation ρ.}
+}
+
+@article{hagan2014arbitrage,
+  title={Arbitrage-free SABR},
+  author={Hagan, Patrick S and Kumar, Deep and Lesniewski, Andrew S and Woodward, Diana E},
+  journal={Wilmott Magazine},
+  pages={60--75},
+  year={2014},
+  note={Updated SABR formulation that corrects the arbitrage issues in the original Hagan formula at low strikes / high volatility. Cite if SABR Stage 5 work uses the corrected variant.}
+}
+
+% --- Additional rough vol skeptic references for the references doc ---
+
+@article{cont2024detecting,
+  title={Detecting rough volatility: a filtering approach},
+  author={Bayer, Christian and Friz, Peter and others},
+  journal={Quantitative Finance},
+  year={2024},
+  publisher={Taylor \& Francis},
+  doi={10.1080/14697688.2024.2399284},
+  note={Filtering approach to the rough vol detection problem; addresses the Cont-Das (2022) microstructure noise critique. See docs/refs/fractional_methods_references.md Section 1.2.}
+}
+
+@article{delemotte2024volatility,
+  title={Volatility models in practice: Rough, Path-dependent or Markovian?},
+  author={Delemotte, Jules and De Marco, Stefano and Segonne, Florent},
+  journal={arXiv preprint},
+  year={2024},
+  note={arXiv:2401.03345. Empirical comparison: rough Bergomi underperforms one-factor Markovian Bergomi on parts of the SPX surface. Skeptical of rough vol's empirical case.}
+}
