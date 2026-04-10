@@ -299,21 +299,39 @@ Heston OMM as a scientifically honest calibration environment.
 `risk_neutral_optimal`, `bbg_numerical`, `linear_inventory_skew`, heuristic anchors.
 If `bbg_numerical ~ risk_neutral_optimal` at low gamma, that is calibration success, not failure.
 
-### Track B — Model-free local control (MAIN contribution)
-A model-free controller that learns the local reward/risk landscape directly
-from belief/path features (inventory, net_delta, tau, v_hat_ewma), bypassing
-the sigma_sq_inv estimation channel entirely.
+### Track B — Hybrid prior + residual control (MAIN contribution)
 
-Initial implementation (`local_kernel_controller.py`): RBF kernel ridge
-regression on (state_features, action) -> spread reward. First pilot shows
-the kernel controller trails BBG baselines by ~22 CE at daily Heston with
-200 training episodes — expected, because per-step spread capture SNR is
-~0.07 at daily frequency. The analytic baselines dominate in-regime.
+Architecture: `u(s_t) = u_prior(s_t) + Δu(s_t)` where the prior is BBG
+numerical and the residual is a low-dimensional learned correction on
+(Δwidth, Δskew) conditioned on state-action pairs.
 
-**This is the informative result**: the Heston/BG regime is well-handled by
-analytic methods. Track B's distinctive value appears when the dynamics move
-outside the analytic-closed-form regime (rough vol, misspecified model,
-higher frequency, multi-strike).
+**Progression:**
+
+1. Pure local kernel controller (`local_kernel_controller.py`): honest null.
+   Trails BBG by ~22 CE at daily Heston. Per-step spread capture SNR ~0.07.
+   This showed pure nonparametric is too data-hungry when the prior is strong.
+
+2. Hybrid BBG + residual (`hybrid_residual_controller.py`): **first positive**.
+   Beats BBG on all 3 held-out Heston parameter cells in pilot:
+   - kappa=2.0, xi=0.5, rho=-0.7: +49 CE, P(>0)=0.974
+   - kappa=2.25, xi=0.4, rho=-0.6: +35 CE, P(>0)=0.924
+   - kappa=1.75, xi=0.6, rho=-0.8: +67 CE, P(>0)=0.979
+
+   Residual learns tighter quoting (spread capture 52 vs 49 for BBG) that
+   transfers across held-out regimes. The question changed from "can a
+   nonparametric controller replace the model?" to "can a learned residual
+   improve a strong model-based prior?" — much better question, and the
+   pilot says yes.
+
+**Architecture diagram:**
+```
+Observed path → Belief/filtered state → Analytic prior u_0 (BBG)
+                                      → Residual model Δu (KRR)
+                    u_0 + Δu → Final quotes/hedge → Wealth/fills
+```
+
+**Next:** formal run to power the held-out contrast; then Step 2 (signature
+kernel) only if RBF residual leaves value on the table.
 
 ### Track C — One exact-recovery benchmark rebuilt cleanly
 Restore confidence in the framework core. One of: Merton exact recovery or
@@ -345,11 +363,12 @@ flowchart TD
 ## 11. Bottom line
 
 1. The project's real thesis is **belief-state control via Koopman/signature structure**.
-2. The OMM Heston work has been **calibration and benchmark construction**.
-3. The strongest OMM finding is that **controller structure matters more than filter quality** in daily Heston.
-4. The **sigma_sq_inv estimation channel is negative** under tested regimes — analytic methods dominate in-regime.
-5. The main methodological contribution moves to **Track B: model-free local control**.
-6. The genuinely distinctive question is still: **what happens when BG no longer applies?**
+2. Filter quality is not the main bottleneck in daily Heston OMM — **controller structure matters more**.
+3. The old `sigma_sq_inv -> skew` channel is dead: better estimation of a single scalar plugged into a fixed skew law does not help.
+4. Pure nonparametric control from scratch is too data-hungry here — honest null, sample-efficiency result.
+5. **The hybrid prior + residual is the first genuine positive**: a low-dimensional learned correction improves a strong model-based prior, and the gain transfers to held-out parameter cells.
+6. The question changed from "can nonparametric control replace the model?" to **"can a learned residual improve a strong prior?"** — and the pilot says yes.
+7. Next: formal run, then signatures only if the RBF residual leaves value on the table.
 
 ## 11. Pointers
 
