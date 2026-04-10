@@ -1,0 +1,53 @@
+======================================================================
+  BILINEAR RECOVERY: Prior-Free CQ-KRONIC Controller
+======================================================================
+Train: 50 eps  |  Test: 30 eps
+Utility: CRRA(gamma=2.0)
+
+--- Training ---
+  Data: 1000 tuples, fitted on 1000 (bw=0.801)
+  Global best fixed: w=0.230, s=0.015, mean_dW=72.10
+  Permuted-null model fitted
+  Train time: 0.1s
+
+--- Evaluation ---
+  risk_neutral_optimal: 0.0s
+  bbg_numerical: 1.2s
+  linear_inventory_skew: 0.0s
+  global_fixed_action: 0.0s
+  local_bilinear_sdre: 2.3s
+  permuted_null: 6.3s
+
+======================================================================
+  RESULTS
+======================================================================
+
+  Strategy                                      CE   Spread Cap
+  -------------------------------------------------------------
+  risk_neutral_optimal                  100056.163       63.283
+  bbg_numerical                         100056.469       63.589
+  linear_inventory_skew                 100056.242       63.151
+  global_fixed_action                   100093.841       59.167
+  local_bilinear_sdre                   100052.940       52.567
+  permuted_null                         100135.315       57.135
+
+  Contrast                                                    Mean  sd_post    P(>0)
+  ---------------------------------------------------------------------------------
+  local_bilinear_sdre - linear_inventory_skew               -3.301   61.290  0.47852
+  local_bilinear_sdre - bbg_numerical                       -3.529   61.314  0.47705
+  local_bilinear_sdre - risk_neutral_optimal                -3.223   61.332  0.47904
+  local_bilinear_sdre - global_fixed_action                -40.901   61.578  0.25328
+  local_bilinear_sdre - permuted_null                      -82.375   69.007  0.11629
+
+  Gap closure: (bilinear - linear) / (bbg - linear) = -14.519
+    bilinear CE = 100052.940
+    linear CE   = 100056.242
+    bbg CE      = 100056.469
+    gap         = 0.227
+
+  Action usage (N=600):
+    mean w = 0.1581, std = 0.0718
+    mean s = 0.02685, std = 0.04207
+    w range: [0.1000, 0.3000]
+    s range: [-0.05000, 0.05000]
+    unique w values (4dp): 60

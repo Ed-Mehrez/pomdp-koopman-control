@@ -28,6 +28,12 @@ from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from applications.option_mm.local_bilinear_controller import (  # noqa: E402
+    LocalBilinearModel,
+    collect_bilinear_training_data,
+    make_local_bilinear_controller,
+    train_bilinear_model,
+)
 from applications.option_mm.hybrid_residual_controller import (  # noqa: E402
     BBGQuoteLookup,
     HybridTrainingBuffer,
@@ -766,3 +772,73 @@ class TestHybridResidualController:
         state = env.reset()
         with pytest.raises(RuntimeError):
             make_hybrid_residual_controller(env, model, state)
+
+
+# ---------------------------------------------------------------------------
+# Local bilinear / CQ-KRONIC controller tests
+# ---------------------------------------------------------------------------
+
+
+class TestBilinearTrainingData:
+    def test_collects_data(self):
+        buf = collect_bilinear_training_data(
+            seeds=(0, 1), horizon_steps=5, initial_cash=100_000.0,
+        )
+        assert buf.size == 10  # 2 seeds x 5 steps
+        assert len(buf.x_list) == 10
+        assert len(buf.u_list) == 10
+        assert all(np.all(np.isfinite(x)) for x in buf.x_list)
+        assert all(np.all(np.isfinite(u)) for u in buf.u_list)
+
+
+class TestLocalBilinearController:
+    def _make_tiny_model(self):
+        return train_bilinear_model(
+            training_seeds=list(range(10)),
+            horizon_steps=5,
+            initial_cash=100_000.0,
+            max_training_samples=200,
+        )
+
+    def test_controller_produces_finite_quotes_in_range(self):
+        model = self._make_tiny_model()
+        env = OptionMarketMakingEnv(
+            horizon_steps=5, initial_cash=100_000.0, seed=99,
+        )
+        state = env.reset()
+        ctrl = make_local_bilinear_controller(env, model, state)
+
+        while not state.done:
+            action = ctrl(state)
+            assert action.bid_price >= 0.0
+            assert action.ask_price >= action.bid_price
+            assert np.isfinite(action.bid_price)
+            assert np.isfinite(action.ask_price)
+            assert np.isfinite(action.hedge_trade)
+            state, _, _, _ = env.step(action)
+
+    def test_no_bbg_leakage(self):
+        """The bilinear controller must not import or call BBG modules."""
+        import inspect
+        from applications.option_mm import local_bilinear_controller as mod
+        source = inspect.getsource(mod)
+        assert "make_bbg_numerical" not in source
+        assert "BBGQuoteLookup" not in source
+        assert "bbg_solver" not in source
+
+    def test_runs_full_episode_with_finite_wealth(self):
+        model = self._make_tiny_model()
+        env = OptionMarketMakingEnv(
+            horizon_steps=10, initial_cash=100_000.0, seed=42,
+        )
+        state = env.reset()
+        ctrl = make_local_bilinear_controller(env, model, state)
+
+        states = [state]
+        while not state.done:
+            action = ctrl(state)
+            state, _, _, _ = env.step(action)
+            states.append(state)
+
+        assert states[-1].done
+        assert np.isfinite(states[-1].wealth)
