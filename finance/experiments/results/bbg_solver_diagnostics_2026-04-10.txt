@@ -1,0 +1,45 @@
+======================================================================
+  BBG 3D Solver Grid-Sensitivity Diagnostics
+======================================================================
+
+--- coarse grid: (n_time=30, n_nu=10, n_vpi=20) ---
+  Runtime: 9.3s
+  Value range: [-4365, 561449]
+  Non-finite: 0
+  t=0 range: [506006, 561449]
+  Terminal max|v|: 0.000000
+  Quotes at t=0, V^pi=0:
+    Finite bid dists: min=0.0097, max=0.0688, n=19
+    Finite ask dists: min=0.0097, max=0.0689, n=19
+    Censored: bid=1, ask=1 of 20
+  20-episode wealth: mean=427747, std=148881
+
+--- medium grid: (n_time=60, n_nu=15, n_vpi=30) ---
+  Runtime: 23.2s
+  Value range: [-2274, 569832]
+  Non-finite: 0
+  t=0 range: [513674, 569832]
+  Terminal max|v|: 0.000000
+  Quotes at t=0, V^pi=0:
+    Finite bid dists: min=0.0097, max=0.0699, n=19
+    Finite ask dists: min=0.0097, max=0.0700, n=19
+    Censored: bid=1, ask=1 of 20
+  20-episode wealth: mean=417806, std=136962
+
+--- fine grid: (n_time=120, n_nu=20, n_vpi=40) ---
+  Runtime: 66.8s
+  Value range: [-1833, 568162]
+  Non-finite: 0
+  t=0 range: [511948, 568162]
+  Terminal max|v|: 0.000000
+  Quotes at t=0, V^pi=0:
+    Finite bid dists: min=0.0099, max=0.0696, n=19
+    Finite ask dists: min=0.0099, max=0.0698, n=19
+    Censored: bid=1, ask=1 of 20
+  20-episode wealth: mean=438778, std=152561
+
+--- Cross-Grid Summary ---
+Grid            v_min      v_max     wealth   bid_lo   bid_hi  cens
+coarse          -4365     561449     427747   0.0097   0.0688     2
+medium          -2274     569832     417806   0.0097   0.0699     2
+fine            -1833     568162     438778   0.0099   0.0696     2
