@@ -20,7 +20,7 @@ The Stage 4 v2 scope is **deliberately narrow**: Heston-only with the dynamics-a
 
 Codex should never bring fSDE / signature / Koopman CdC machinery into v2, even if it would technically be possible. The narrower scope is the right thesis-critical-path discipline. See `feedback_no_overscope_thesis_critical_path.md` for the rule.
 
-> **Quick context for new readers**: This repo's primary contribution is a methodology paper on Koopman-SDRE for partially observed stochastic control. Option market making (OMM) is the **finance application slot** for that paper — *not* a separate paper in itself, but also a candidate thesis chapter for Ed's PhD in financial economics. The disciplined paired-bootstrap workflow (split RNG, no tuning, pre-registered ship rules, no silent N changes) is itself a methodological contribution alongside the SDRE algorithm.
+> **Quick context for new readers**: This repo's primary contribution is a methodology paper on Koopman-SDRE for partially observed stochastic control. Option market making (OMM) is the **finance application slot** for that paper — *not* a separate paper in itself, but also a candidate thesis chapter for Ed's PhD in financial economics. The disciplined paired Bayesian posterior workflow (split RNG, no tuning, pre-registered ship rules, no silent N changes) is itself a methodological contribution alongside the SDRE algorithm.
 
 ---
 
@@ -217,7 +217,7 @@ Each reference is annotated with what we use it for and where it fits in the met
    ```
    where `Γ = D_+^{-1/2} (D_+^{1/2} Σ D_+^{1/2})^{1/2} D_+^{-1/2}` is a derived inventory-coupling matrix.
 
-**Why this is critical for our methodology pitch**: their perturbative-Riccati approach is **structurally identical to State-Dependent Riccati Equation (SDRE) control**. They linearize the local quadratic problem at each state (or each perturbation order) and solve a Riccati system. *The Bergault group implicitly applies SDRE to multi-asset MM, without calling it SDRE.* **Our work applies the same methodology to options under stochastic vol with general utility, and adds disciplined paired-bootstrap evaluation.** This is a cleaner pitch than "we invent Koopman-SDRE for OMM" — we are formalizing and generalizing an approach that already exists in the literature.
+**Why this is critical for our methodology pitch**: their perturbative-Riccati approach is **structurally identical to State-Dependent Riccati Equation (SDRE) control**. They linearize the local quadratic problem at each state (or each perturbation order) and solve a Riccati system. *The Bergault group implicitly applies SDRE to multi-asset MM, without calling it SDRE.* **Our work applies the same methodology to options under stochastic vol with general utility, and adds disciplined paired Bayesian posterior evaluation.** This is a cleaner pitch than "we invent Koopman-SDRE for OMM" — we are formalizing and generalizing an approach that already exists in the literature.
 
 ### General-utility framework: Davis & Lleo (2010, 2014)
 
@@ -391,9 +391,9 @@ Putting it all together:
 3. **Utility**: General smooth utility via Davis-Lleo local Arrow-Pratt construction, parameterized by `γ_local(W)`
 4. **Solver**: SDRE local Riccati, applied to the Bergault-Guéant local quadratic at each state
 5. **Linear baseline**: Bergault-Guéant analytical optimum for the risk-neutral case under exponential intensity (essentially A-S 2008 generalized to options under stochastic vol)
-6. **Validation**: paired-bootstrap CE comparison under disciplined workflow (Stages 1-3 already lock the paired-seed and inference machinery)
+6. **Validation**: paired Bayesian posterior CE comparison under disciplined workflow (Stages 1-3 already lock the paired-seed and inference machinery)
 
-This is a clean, citation-grounded methodology that doesn't require us to derive anything new from scratch. The thesis chapter writes itself: *"We adopt the Bergault-Guéant (2019) HJB, generalize it from CARA to arbitrary smooth utility via the Davis-Lleo local Arrow-Pratt construction, and solve via State-Dependent Riccati Equation methodology following Çimen (2008). We test against the Bergault-Guéant analytical baseline at multiple utility specifications, with disciplined paired-bootstrap evaluation, and benchmark against Buehler-Murray-Wood (2024) deep Bellman hedging in Stage 6."*
+This is a clean, citation-grounded methodology that doesn't require us to derive anything new from scratch. The thesis chapter writes itself: *"We adopt the Bergault-Guéant (2019) HJB, generalize it from CARA to arbitrary smooth utility via the Davis-Lleo local Arrow-Pratt construction, and solve via State-Dependent Riccati Equation methodology following Çimen (2008). We test against the Bergault-Guéant analytical baseline at multiple utility specifications, with disciplined paired Bayesian posterior evaluation, and benchmark against Buehler-Murray-Wood (2024) deep Bellman hedging in Stage 6."*
 
 ---
 
@@ -527,7 +527,7 @@ If Stage 4 v2 is also a null at default Heston, the next move is **pre-registere
 This is the **strongest possible thesis pitch** because it positions SDRE as a *practical alternative* to the JP-Morgan-style deep hedging research, not just an academic toy. The methodology paper now has three contributions:
 
 1. **Algorithmic**: SDRE on the BG HJB with general utility via Davis-Lleo
-2. **Empirical**: Disciplined paired-bootstrap evaluation showing SDRE matches deep RL at fraction of compute
+2. **Empirical**: Disciplined paired Bayesian posterior evaluation showing SDRE matches deep RL at fraction of compute
 3. **Methodological**: Pre-registered, no-tuning, no-silent-N evaluation pipeline that the OMM literature mostly lacks
 
 ### 7.2 Personal connection
@@ -560,7 +560,7 @@ This is a significant strategic asset for the thesis. **Treat Stage 6 as a high-
 
 - A new env. The existing OMM env works for both SDRE and deep RL training.
 - A new utility framework. The OCE / Davis-Lleo approach already covers everything Buehler uses.
-- A new evaluation pipeline. The paired-bootstrap pipeline from Stages 2-4 applies directly.
+- A new evaluation pipeline. The paired Bayesian posterior pipeline from Stages 2-4 applies directly.
 
 **Stage 6 is implementation work, not new theory.** Defer until Stage 4 v2 lands and Plan B is either confirmed or unnecessary.
 
@@ -681,6 +681,7 @@ After every stage:
 | 2026-04-08 | Reference search: Bergault & Guéant (2019) identified as canonical OMM-with-options reference. Bergault et al. (2018/2021) provides the perturbative-Riccati methodology. Davis-Lleo (2014) for general utility via Arrow-Pratt. El Aoud-Abergel (2014) demoted. |
 | 2026-04-08 | This planning document created at `docs/plan_omm_research.md`. Stage 4 v2 design locked. Stage 6 Buehler comparison added as future work with personal contact path. |
 | 2026-04-08 | **Codex math audit pass** of `docs/derivation_omm_sdre_v2.md` complete. Five items resolved (inventory-skew coefficient is unity not 1/2; smoke `half_spread = 0.05` is heuristic not BG/AS optimum; Heston `σ²_inv` is V-independent at leading order; vega is per-contract throughout; CRRA(γ=2) magnitude is `~7.8% of 1/k per unit q`, not "essentially zero"). §5.4 ship rules revised: headline gate is now methodology validation (`|ΔCE_SDRE − BG closed form|/sd_post < 2`), the `sdre v2 − A-S` improvement gate is downgraded to directional reporting, and the new improvement gate moves to a higher-`γ_inv` regime per Plan B. Derivation note status updated to AUDIT-RESOLVED DRAFT, ready for codex implementation. |
+| 2026-04-09 | Stage 4 v2 re-spec after pilot. Headline positive promoted from `SDRE > BG` to `BG > constant_spread(0.05)` (was a pre-registered secondary, now elevated). `SDRE − BG` retained as a *secondary ROPE-based equivalence check* with pre-registered half-width 10.0, not a superiority gate. Pilot: `ΔCE_{SDRE−BG} = −7.134`, `per_seed_sd = 105.57`, projected `σ_post ≈ 1.49` at N=5000, projected `P(ΔCE ∈ [−10, +10]) ≈ 0.973`. This is a promoted-secondary re-spec, not the original framing. |
 
 ---
 

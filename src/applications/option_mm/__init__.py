@@ -1,5 +1,6 @@
 """Option market-making benchmark components."""
 
+from .bbg_solver import make_bbg_numerical, solve_bbg_quote_tables, solve_bbg_value_table
 from .beliefs import (
     BootstrapParticleFilter,
     EWMAVarianceFilter,
@@ -14,6 +15,8 @@ from .controllers import (
     avellaneda_stoikov,
     constant_spread,
     linear_inventory_rule,
+    make_linear_inventory_skew,
+    make_risk_neutral_optimal,
     make_bergault_gueant_closed_form,
     make_sdre_controller_v2,
     no_quote,
@@ -56,6 +59,7 @@ __all__ = [
     "AggregateSummary",
     "ASContext",
     "BootstrapParticleFilter",
+    "make_bbg_numerical",
     "ConstantSpreadContext",
     "EWMAVarianceFilter",
     "ExecutionCostSpec",
@@ -84,6 +88,8 @@ __all__ = [
     "crra_utility",
     "empirical_sliding_window_estimator",
     "linear_inventory_rule",
+    "make_linear_inventory_skew",
+    "make_risk_neutral_optimal",
     "make_bergault_gueant_closed_form",
     "make_sdre_controller_v2",
     "no_quote",
@@ -93,5 +99,7 @@ __all__ = [
     "posterior_summary",
     "quadratic_utility",
     "sdre_controller",
+    "solve_bbg_quote_tables",
+    "solve_bbg_value_table",
     "summarize_episode",
 ]

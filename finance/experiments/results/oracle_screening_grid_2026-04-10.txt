@@ -1,0 +1,69 @@
+[1/20] default / CRRA (xi=0.5, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.7412  sd_post=1.2144  P(>0)=0.0120
+[2/20] default / CARA (xi=0.5, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.7411  sd_post=1.2144  P(>0)=0.0120
+[3/20] high-xi / CRRA (xi=1.0, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-5.2565  sd_post=4.1780  P(>0)=0.1042
+[4/20] high-xi / CARA (xi=1.0, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-5.1845  sd_post=4.1864  P(>0)=0.1078
+[5/20] very-high-xi / CRRA (xi=1.5, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-9.3270  sd_post=7.6188  P(>0)=0.1104
+[6/20] very-high-xi / CARA (xi=1.5, kappa=2.0, H=20)
+  LOSE  oracle-BG: ΔCE=-9.1923  sd_post=7.6226  P(>0)=0.1139
+[7/20] slow-kappa / CRRA (xi=0.5, kappa=1.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.8365  sd_post=1.2326  P(>0)=0.0107
+[8/20] slow-kappa / CARA (xi=0.5, kappa=1.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.8364  sd_post=1.2325  P(>0)=0.0107
+[9/20] slow-kappa+high-xi / CRRA (xi=1.0, kappa=1.0, H=20)
+  LOSE  oracle-BG: ΔCE=-4.9268  sd_post=4.1988  P(>0)=0.1203
+[10/20] slow-kappa+high-xi / CARA (xi=1.0, kappa=1.0, H=20)
+  LOSE  oracle-BG: ΔCE=-4.8267  sd_post=4.2056  P(>0)=0.1256
+[11/20] fast-kappa / CRRA (xi=0.5, kappa=5.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.3350  sd_post=1.1791  P(>0)=0.0238
+[12/20] fast-kappa / CARA (xi=0.5, kappa=5.0, H=20)
+  LOSE  oracle-BG: ΔCE=-2.3349  sd_post=1.1791  P(>0)=0.0238
+[13/20] fast-kappa+high-xi / CRRA (xi=1.0, kappa=5.0, H=20)
+  LOSE  oracle-BG: ΔCE=-5.7775  sd_post=4.0749  P(>0)=0.0781
+[14/20] fast-kappa+high-xi / CARA (xi=1.0, kappa=5.0, H=20)
+  LOSE  oracle-BG: ΔCE=-5.6101  sd_post=4.0807  P(>0)=0.0846
+[15/20] long-horizon / CRRA (xi=0.5, kappa=2.0, H=60)
+  LOSE  oracle-BG: ΔCE=4.2355  sd_post=8.5467  P(>0)=0.6899
+[16/20] long-horizon / CARA (xi=0.5, kappa=2.0, H=60)
+  LOSE  oracle-BG: ΔCE=4.2872  sd_post=8.5478  P(>0)=0.6920
+[17/20] long-horizon+high-xi / CRRA (xi=1.0, kappa=2.0, H=60)
+  LOSE  oracle-BG: ΔCE=13.7171  sd_post=18.3594  P(>0)=0.7725
+[18/20] long-horizon+high-xi / CARA (xi=1.0, kappa=2.0, H=60)
+  LEAN  oracle-BG: ΔCE=15.6641  sd_post=18.3711  P(>0)=0.8031
+[19/20] long+slow+high-xi / CRRA (xi=1.0, kappa=1.0, H=60)
+  LEAN  oracle-BG: ΔCE=18.6417  sd_post=18.4129  P(>0)=0.8443
+[20/20] long+slow+high-xi / CARA (xi=1.0, kappa=1.0, H=60)
+  LEAN  oracle-BG: ΔCE=20.2443  sd_post=18.4163  P(>0)=0.8642
+
+====================================================================================================
+ORACLE SCREENING GRID — oracle SDRE vs BG (zero skew)
+Question: does perfect-V inventory skew EVER beat zero skew?
+====================================================================================================
+regime                    util     xi    κ   H        ΔCE    sd_post    P(>0) verdict
+----------------------------------------------------------------------------------------------------
+default                   CRRA    0.5  2.0  20    -2.7412     1.2144   0.0120   LOSE*
+default                   CARA    0.5  2.0  20    -2.7411     1.2144   0.0120   LOSE*
+high-xi                   CRRA    1.0  2.0  20    -5.2565     4.1780   0.1042    LOSE
+high-xi                   CARA    1.0  2.0  20    -5.1845     4.1864   0.1078    LOSE
+very-high-xi              CRRA    1.5  2.0  20    -9.3270     7.6188   0.1104    LOSE
+very-high-xi              CARA    1.5  2.0  20    -9.1923     7.6226   0.1139    LOSE
+slow-kappa                CRRA    0.5  1.0  20    -2.8365     1.2326   0.0107   LOSE*
+slow-kappa                CARA    0.5  1.0  20    -2.8364     1.2325   0.0107   LOSE*
+slow-kappa+high-xi        CRRA    1.0  1.0  20    -4.9268     4.1988   0.1203    LOSE
+slow-kappa+high-xi        CARA    1.0  1.0  20    -4.8267     4.2056   0.1256    LOSE
+fast-kappa                CRRA    0.5  5.0  20    -2.3350     1.1791   0.0238   LOSE*
+fast-kappa                CARA    0.5  5.0  20    -2.3349     1.1791   0.0238   LOSE*
+fast-kappa+high-xi        CRRA    1.0  5.0  20    -5.7775     4.0749   0.0781    LOSE
+fast-kappa+high-xi        CARA    1.0  5.0  20    -5.6101     4.0807   0.0846    LOSE
+long-horizon              CRRA    0.5  2.0  60     4.2355     8.5467   0.6899    NULL
+long-horizon              CARA    0.5  2.0  60     4.2872     8.5478   0.6920    NULL
+long-horizon+high-xi      CRRA    1.0  2.0  60    13.7171    18.3594   0.7725    NULL
+long-horizon+high-xi      CARA    1.0  2.0  60    15.6641    18.3711   0.8031    LEAN
+long+slow+high-xi         CRRA    1.0  1.0  60    18.6417    18.4129   0.8443    LEAN
+long+slow+high-xi         CARA    1.0  1.0  60    20.2443    18.4163   0.8642    LEAN
+----------------------------------------------------------------------------------------------------
+RESULT: No decisive oracle win, but 3 regimes lean positive. Consider targeted follow-up at higher N or higher risk aversion.

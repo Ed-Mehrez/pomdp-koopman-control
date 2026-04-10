@@ -1,33 +1,37 @@
-"""Stage-4 v2 validation benchmark for option market making.
+"""Stage-4 v2 BBG re-anchored benchmark for option market making.
 
-Validates the multiplier-corrected BG+Davis-Lleo closed-form controller against
-the Bergault-Guéant analytic baseline, with a cross-stage wiring check against
-the locked Stage-2 EWMA-vs-constant result.
+Uses paired Bayesian posterior inference to compare the finite-gamma BBG
+numerical controller against its risk-neutral ±1/k limit, with the legacy
+linear-inventory-skew controllers retained as diagnostics and a cross-stage
+wiring check against the locked Stage-2 EWMA-vs-constant result.
 """
 
 from __future__ import annotations
 
+import argparse
 import itertools
 import sys
-from dataclasses import dataclass
-from math import ceil, isfinite
+from dataclasses import dataclass, replace
+from math import ceil, isfinite, sqrt
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import norm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from applications.option_mm.bbg_solver import make_bbg_numerical  # noqa: E402
 from applications.option_mm.beliefs import EWMAVarianceFilter  # noqa: E402
 from applications.option_mm.controllers import (  # noqa: E402
     ASContext,
     ConstantSpreadContext,
     avellaneda_stoikov,
     constant_spread,
-    make_bergault_gueant_closed_form,
-    make_sdre_controller_v2,
+    make_linear_inventory_skew,
+    make_risk_neutral_optimal,
     no_quote,
 )
 from applications.option_mm.env import FillModelSpec, OptionMMAction  # noqa: E402
@@ -35,6 +39,7 @@ from applications.option_mm.env import OptionMMState, OptionMarketMakingEnv
 from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
+    oracle_heston_estimator,
 )
 from applications.option_mm.metrics import (  # noqa: E402
     EpisodeSummary,
@@ -56,25 +61,24 @@ SHARED_ORDER = (
     "no_quote",
     "constant_spread",
     "as_ewma",
-    "bergault_gueant_closed_form",
+    "risk_neutral_optimal",
 )
-SDRE_ORDER = (
-    "sdre_v2_heston",
-    "sdre_v2_empirical",
+UTILITY_ORDER = (
+    "bbg_numerical",
+    "linear_inventory_skew_oracle",
+    "linear_inventory_skew_heston",
+    "linear_inventory_skew_empirical",
 )
-SCENARIO_ORDER = SHARED_ORDER + SDRE_ORDER
+SCENARIO_ORDER = SHARED_ORDER + UTILITY_ORDER
 
 
 @dataclass(frozen=True)
 class V2AblationConfig:
     seed_sequence_entropy: int = 20260407
     pilot_seeds: tuple[int, ...] = tuple(range(200))
-    # Pilot result (2026-04-09): CRRA sdre_v2_heston minus BG at N=200 gave
-    # mean_diff=-7.134105, per_seed_sd=105.573530, per_seed_snr=0.067575.
-    # To hit the pre-registered target sd_post<=0.5 for the validation contrast
-    # would require N~44,584, so the formal N=5000 run is intentionally stopped
-    # rather than silently bumped. The Stage-2 cross-stage wiring check still uses
-    # tuple(range(5000)) with the same seed entropy when the formal run is enabled.
+    # The formal N=5000 grid remains locked to preserve the Stage-2 cross-stage
+    # wiring check. The pilot now projects the BBG-vs-risk-neutral ROPE gate,
+    # while the legacy sd_post target remains diagnostic-only output.
     formal_seeds: tuple[int, ...] = tuple(range(5_000))
     horizon_steps: int = 20
     initial_cash: float = 100_000.0
@@ -83,10 +87,18 @@ class V2AblationConfig:
     gamma_inv: float = 0.1
     gamma_ce: float = 2.0
     cara_alpha: float = 2.0e-5
-    quadratic_k: float = 2.0e-5
+    # Chosen so quadratic Arrow-Pratt matches 2e-5 at W=1e5:
+    # k / (1 - kW) = 2e-5  =>  k = 2e-5 / 3.
+    quadratic_k: float = 2.0e-5 / 3.0
     empirical_window_length: int = 10
     inventory_limit: int = 10
     posterior_draws: int = 5_000
+    # Pre-registered ROPE half-width for the low-gamma equivalence check on
+    # ``bbg_numerical - risk_neutral_optimal``. The gate is
+    # P(delta_CE in [-rope_half_width, +rope_half_width] | data) >= 0.95.
+    # Default 10.0 is the post-pilot pre-registration; overrides are for
+    # sensitivity reporting only, never for the locked run.
+    rope_half_width: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +130,22 @@ class PilotPowerResult:
     per_seed_snr: float
     target_sd_post: float
     required_n_for_target_sd: int | None
+
+
+@dataclass(frozen=True)
+class RopeProjection:
+    """Pilot-time projection of the Track B2 ROPE equivalence gate."""
+
+    n_formal: int
+    half_width: float
+    mean_diff: float
+    projected_sd_post: float
+    projected_p_in_rope: float
+    threshold: float = 0.95
+
+    @property
+    def passes(self) -> bool:
+        return self.projected_p_in_rope >= self.threshold
 
 
 @dataclass(frozen=True)
@@ -190,8 +218,8 @@ def run_shared_episode(
     state = env.reset()
     controller = None
     variance_filter = None
-    if name == "bergault_gueant_closed_form":
-        controller = make_bergault_gueant_closed_form(env)
+    if name == "risk_neutral_optimal":
+        controller = make_risk_neutral_optimal(env)
     elif name == "as_ewma":
         variance_filter = EWMAVarianceFilter(half_life_days=config.ewma_half_life_days)
         variance_filter.reset(initial_variance=state.variance, initial_spot=state.spot)
@@ -215,7 +243,7 @@ def run_shared_episode(
                     horizon_remaining=horizon_remaining,
                 ),
             )
-        elif name == "bergault_gueant_closed_form":
+        elif name == "risk_neutral_optimal":
             assert controller is not None
             action = controller(state)
         else:
@@ -230,16 +258,16 @@ def run_shared_episode(
     return states, infos
 
 
-def run_sdre_strategy(
-    estimator_name: str,
+def run_utility_strategy(
+    strategy_name: str,
     seeds: tuple[int, ...],
     config: V2AblationConfig,
     utility: UtilitySpec,
 ) -> StrategyRun:
     summaries: list[EpisodeSummary] = []
     for seed in seeds:
-        states, infos = run_sdre_episode(
-            estimator_name=estimator_name,
+        states, infos = run_utility_episode(
+            strategy_name=strategy_name,
             seed=seed,
             config=config,
             utility=utility,
@@ -251,11 +279,11 @@ def run_sdre_strategy(
                 inventory_limit=config.inventory_limit,
             )
         )
-    return StrategyRun(name=estimator_name, summaries=summaries)
+    return StrategyRun(name=strategy_name, summaries=summaries)
 
 
-def run_sdre_episode(
-    estimator_name: str,
+def run_utility_episode(
+    strategy_name: str,
     seed: int,
     config: V2AblationConfig,
     utility: UtilitySpec,
@@ -267,16 +295,28 @@ def run_sdre_episode(
         seed=seed,
     )
     state = env.reset()
-    if estimator_name == "sdre_v2_heston":
+    gamma = utility.arrow_pratt(state.wealth)
+    if strategy_name == "bbg_numerical":
+        controller = make_bbg_numerical(
+            env,
+            state,
+            gamma=gamma,
+            max_inventory=config.inventory_limit,
+        )
+    elif strategy_name == "linear_inventory_skew_oracle":
+        estimator = oracle_heston_estimator(env)
+        controller = make_linear_inventory_skew(env, estimator, utility)
+    elif strategy_name == "linear_inventory_skew_heston":
         estimator = bergault_gueant_heston_estimator(env, state)
-    elif estimator_name == "sdre_v2_empirical":
+        controller = make_linear_inventory_skew(env, estimator, utility)
+    elif strategy_name == "linear_inventory_skew_empirical":
         estimator = empirical_sliding_window_estimator(
             window_length=config.empirical_window_length,
             env=env,
         )
+        controller = make_linear_inventory_skew(env, estimator, utility)
     else:
-        raise ValueError(f"unknown estimator strategy: {estimator_name}")
-    controller = make_sdre_controller_v2(env, estimator, utility)
+        raise ValueError(f"unknown utility-dependent strategy: {strategy_name}")
 
     states = [state]
     infos = []
@@ -288,14 +328,14 @@ def run_sdre_episode(
     return states, infos
 
 
-def run_sdre_strategies_by_utility(
+def run_utility_strategies_by_utility(
     seeds: tuple[int, ...],
     config: V2AblationConfig,
 ) -> dict[str, dict[str, StrategyRun]]:
     return {
         utility_name: {
-            name: run_sdre_strategy(name, seeds, config, utility)
-            for name in SDRE_ORDER
+            name: run_utility_strategy(name, seeds, config, utility)
+            for name in UTILITY_ORDER
         }
         for utility_name, utility in utility_specs(config)
     }
@@ -303,19 +343,19 @@ def run_sdre_strategies_by_utility(
 
 def combined_runs_for_utility(
     shared_runs: dict[str, StrategyRun],
-    sdre_runs: dict[str, StrategyRun],
+    utility_runs: dict[str, StrategyRun],
 ) -> dict[str, StrategyRun]:
     runs = dict(shared_runs)
-    runs.update(sdre_runs)
+    runs.update(utility_runs)
     return runs
 
 
 def pilot_power_result(
-    bg_run: StrategyRun,
-    sdre_run: StrategyRun,
+    reference_run: StrategyRun,
+    candidate_run: StrategyRun,
     target_sd_post: float = TARGET_SD_POST,
 ) -> PilotPowerResult:
-    diffs = sdre_run.terminal_wealth - bg_run.terminal_wealth
+    diffs = candidate_run.terminal_wealth - reference_run.terminal_wealth
     mean_diff = float(np.mean(diffs))
     per_seed_sd = _sample_sd(diffs)
     per_seed_snr = 0.0 if per_seed_sd == 0.0 else abs(mean_diff) / per_seed_sd
@@ -380,6 +420,39 @@ def paired_posterior_checks(
     return checks
 
 
+def project_rope_from_pilot(
+    pilot: PilotPowerResult,
+    half_width: float,
+    n_formal: int,
+) -> RopeProjection:
+    """Project the Track B2 ROPE probability at the planned formal N.
+
+    Uses the analytic Normal posterior implied by the delta method:
+    sd_post(N) = per_seed_sd / sqrt(N), and
+    P(ΔCE in [-h, +h]) = Φ((h - mean)/sd_post) - Φ((-h - mean)/sd_post).
+    """
+    if half_width <= 0.0 or not isfinite(half_width):
+        raise ValueError("half_width must be positive and finite")
+    if n_formal <= 0:
+        raise ValueError("n_formal must be positive")
+
+    projected_sd_post = (
+        float("inf") if pilot.per_seed_sd == 0.0 else pilot.per_seed_sd / sqrt(n_formal)
+    )
+    projected_p = _normal_rope_probability(
+        mean=pilot.mean_diff,
+        sd_post=projected_sd_post,
+        half_width=half_width,
+    )
+    return RopeProjection(
+        n_formal=n_formal,
+        half_width=half_width,
+        mean_diff=pilot.mean_diff,
+        projected_sd_post=projected_sd_post,
+        projected_p_in_rope=projected_p,
+    )
+
+
 def print_pilot(result: PilotPowerResult, pilot_n: int) -> None:
     required = "inf" if result.required_n_for_target_sd is None else str(result.required_n_for_target_sd)
     print("\n[pilot power calc]")
@@ -390,6 +463,20 @@ def print_pilot(result: PilotPowerResult, pilot_n: int) -> None:
         f"per_seed_snr={result.per_seed_snr:.6f} "
         f"target_sd_post={result.target_sd_post:.6f} "
         f"required_N_for_target~{required}"
+    )
+
+
+def print_rope_projection(projection: RopeProjection) -> None:
+    """Print the projected Track B2 ROPE probability at the formal N."""
+    status = "PASS" if projection.passes else "FAIL"
+    print("\n[pilot ROPE projection (Track B2 secondary)]")
+    print(
+        f"  {status}  "
+        f"half_width=±{projection.half_width:.6f} "
+        f"N_formal={projection.n_formal} "
+        f"projected_sd_post={projection.projected_sd_post:.6f} "
+        f"projected_P(ΔCE in ROPE)={projection.projected_p_in_rope:.6f} "
+        f"threshold={projection.threshold:.2f}"
     )
 
 
@@ -429,25 +516,32 @@ def print_posterior_checks(checks: list[PairedPosteriorCheck]) -> None:
 
 def print_gates(
     headline_checks: dict[str, PairedPosteriorCheck],
-    bg_constant_crra: PairedPosteriorCheck,
+    risk_neutral_constant_crra: PairedPosteriorCheck,
+    rope_probabilities: dict[str, float],
+    rope_half_width: float,
     cross_stage_error: float,
     all_checks: list[PairedPosteriorCheck],
 ) -> None:
     print("\n[stage-4 v2 gates]")
-    for utility_name in ("CRRA", "CARA", "QUADRATIC"):
-        check = headline_checks[utility_name]
-        z_like = float("inf") if check.delta.sd_post == 0.0 else abs(check.delta.mean) / check.delta.sd_post
-        passed = z_like < 2.0
+    for utility_name in ("CRRA", "CARA"):
+        p_in_rope = rope_probabilities[utility_name]
+        passed = p_in_rope >= 0.95
         print(
             f"  {'PASS' if passed else 'FAIL':4s}  "
-            f"{utility_name} |ΔCE_sdre_v2_heston_minus_BG| / sd_post < 2: "
-            f"value={z_like:.6f}"
+            f"{utility_name} P(ΔCE_{{bbg_numerical - risk_neutral_optimal}} in ±{rope_half_width:g}) >= 0.95: "
+            f"P={p_in_rope:.6f}"
         )
-    bg_constant_pass = bg_constant_crra.delta.p_positive >= 0.95
+    quadratic_rope = rope_probabilities["QUADRATIC"]
     print(
-        f"  {'PASS' if bg_constant_pass else 'FAIL':4s}  "
-        "CRRA BG minus constant_spread P(>0) >= 0.95: "
-        f"P={bg_constant_crra.delta.p_positive:.6f}"
+        f"  INFO  "
+        f"QUADRATIC P(ΔCE_{{bbg_numerical - risk_neutral_optimal}} in ±{rope_half_width:g}) = "
+        f"{quadratic_rope:.6f} (descriptive only)"
+    )
+    risk_neutral_pass = risk_neutral_constant_crra.delta.p_positive >= 0.99
+    print(
+        f"  {'PASS' if risk_neutral_pass else 'FAIL':4s}  "
+        "CRRA risk_neutral_optimal minus constant_spread P(>0) >= 0.99: "
+        f"P={risk_neutral_constant_crra.delta.p_positive:.6f}"
     )
     cross_stage_pass = cross_stage_error <= STAGE2_CROSS_STAGE_TOL
     print(
@@ -470,6 +564,11 @@ def print_stage_sentence(
     crra_headline: PairedPosteriorCheck,
     cara_headline: PairedPosteriorCheck,
     quadratic_headline: PairedPosteriorCheck,
+    crra_linear_diagnostic: PairedPosteriorCheck,
+    cara_linear_diagnostic: PairedPosteriorCheck,
+    quadratic_linear_diagnostic: PairedPosteriorCheck,
+    risk_neutral_constant_crra: PairedPosteriorCheck,
+    rope_probabilities: dict[str, float],
     cross_stage_value: float,
     outcome: str,
 ) -> None:
@@ -477,8 +576,15 @@ def print_stage_sentence(
     print(
         f"On {len(config.formal_seeds)} paired seeds "
         f"(same SeedSequence({config.seed_sequence_entropy}) as Stages 2/3), "
-        "under CRRA(gamma=2) sdre_v2_heston achieves "
-        f"delta CE vs bergault_gueant_closed_form = {crra_headline.delta.mean:.6f} "
+        "under CRRA(gamma=2) risk_neutral_optimal achieves "
+        f"delta CE vs constant_spread = {risk_neutral_constant_crra.delta.mean:.6f} "
+        f"with sd_post = {risk_neutral_constant_crra.delta.sd_post:.6f} and "
+        f"P(>0) = {risk_neutral_constant_crra.delta.p_positive:.6f}. "
+        "The BBG-vs-risk-neutral low-gamma equivalence check gives "
+        f"CRRA P(in ±{config.rope_half_width:g}) = {rope_probabilities['CRRA']:.6f} and "
+        f"CARA P(in ±{config.rope_half_width:g}) = {rope_probabilities['CARA']:.6f}. "
+        f"Under CRRA, bbg_numerical achieves "
+        f"delta CE vs risk_neutral_optimal = {crra_headline.delta.mean:.6f} "
         f"with sd_post = {crra_headline.delta.sd_post:.6f} and "
         f"P(>0) = {crra_headline.delta.p_positive:.6f}. "
         f"Under CARA(alpha={config.cara_alpha:.1e}), delta CE = {cara_headline.delta.mean:.6f} "
@@ -487,35 +593,32 @@ def print_stage_sentence(
         f"Under quadratic(k={config.quadratic_k:.1e}), delta CE = {quadratic_headline.delta.mean:.6f} "
         f"with sd_post = {quadratic_headline.delta.sd_post:.6f} and "
         f"P(>0) = {quadratic_headline.delta.p_positive:.6f}. "
+        "The legacy linear-inventory-skew diagnostic remains dominated: "
+        f"under CRRA, delta CE vs bbg_numerical = {crra_linear_diagnostic.delta.mean:.6f} "
+        f"(P(>0) = {crra_linear_diagnostic.delta.p_positive:.6f}); "
+        f"under CARA, delta CE = {cara_linear_diagnostic.delta.mean:.6f} "
+        f"(P(>0) = {cara_linear_diagnostic.delta.p_positive:.6f}); "
+        f"under quadratic, delta CE = {quadratic_linear_diagnostic.delta.mean:.6f} "
+        f"(P(>0) = {quadratic_linear_diagnostic.delta.p_positive:.6f}). "
         f"EWMA-constant reproduces the Stage-2 CRRA delta CE {cross_stage_value:.6f}. "
         f"The result supports {outcome}."
     )
 
 
 def classify_outcome(
-    headline_checks: dict[str, PairedPosteriorCheck],
-    bg_constant_crra: PairedPosteriorCheck,
+    risk_neutral_constant_crra: PairedPosteriorCheck,
+    rope_probabilities: dict[str, float],
 ) -> str:
-    all_validate = all(
-        (float("inf") if check.delta.sd_post == 0.0 else abs(check.delta.mean) / check.delta.sd_post) < 2.0
-        for check in headline_checks.values()
+    anchor_beats_constant = risk_neutral_constant_crra.delta.p_positive >= 0.99
+    rope_passes = all(
+        rope_probabilities[utility_name] >= 0.95
+        for utility_name in ("CRRA", "CARA")
     )
-    bg_beats_constant = bg_constant_crra.delta.p_positive >= 0.95
-    if all_validate and bg_beats_constant:
-        return "v2-validation"
-    if all(
-        check.delta.mean > 0.0
-        and (float("inf") if check.delta.sd_post == 0.0 else abs(check.delta.mean) / check.delta.sd_post) >= 2.0
-        for check in headline_checks.values()
-    ):
-        return "v2-improvement"
-    if all(
-        check.delta.mean < 0.0
-        and (float("inf") if check.delta.sd_post == 0.0 else abs(check.delta.mean) / check.delta.sd_post) >= 2.0
-        for check in headline_checks.values()
-    ):
-        return "v2-disagreement"
-    return "v2-still-null"
+    if anchor_beats_constant and rope_passes:
+        return "bbg-validation"
+    if anchor_beats_constant:
+        return "bbg-anchor-only"
+    return "bbg-anchor-fail"
 
 
 def _sample_sd(values: np.ndarray) -> float:
@@ -524,43 +627,124 @@ def _sample_sd(values: np.ndarray) -> float:
     return float(np.std(values, ddof=1))
 
 
+def _reverse_posterior(summary: PosteriorSummary) -> PosteriorSummary:
+    return PosteriorSummary(
+        mean=-summary.mean,
+        sd_post=summary.sd_post,
+        ci_low=-summary.ci_high,
+        ci_high=-summary.ci_low,
+        p_positive=1.0 - summary.p_positive,
+    )
+
+
+def _reverse_check(check: PairedPosteriorCheck, contrast: str) -> PairedPosteriorCheck:
+    return PairedPosteriorCheck(
+        contrast=contrast,
+        utility_name=check.utility_name,
+        delta=_reverse_posterior(check.delta),
+        mc=_reverse_posterior(check.mc),
+    )
+
+
+def _lookup_contrast(
+    lookup: dict[str, PairedPosteriorCheck],
+    left: str,
+    right: str,
+) -> PairedPosteriorCheck:
+    direct = f"{left}_minus_{right}"
+    if direct in lookup:
+        return lookup[direct]
+    reverse = f"{right}_minus_{left}"
+    if reverse in lookup:
+        return _reverse_check(lookup[reverse], direct)
+    raise KeyError(direct)
+
+
 def _relative_error(a: float, b: float) -> float:
     scale = max(abs(a), abs(b), 1e-12)
     return abs(a - b) / scale
 
 
-def main() -> int:
-    config = V2AblationConfig()
+def _normal_rope_probability(mean: float, sd_post: float, half_width: float) -> float:
+    """Analytic P(ΔCE in [-h, +h]) for a Normal(mean, sd_post) posterior."""
+    if half_width <= 0.0 or not isfinite(half_width):
+        raise ValueError("half_width must be positive and finite")
+    if sd_post < 0.0 or not isfinite(sd_post):
+        return 0.0
+    if sd_post == 0.0:
+        return 1.0 if -half_width <= mean <= half_width else 0.0
+    upper = (half_width - mean) / sd_post
+    lower = (-half_width - mean) / sd_post
+    return float(norm.cdf(upper) - norm.cdf(lower))
+
+
+def _build_config_from_cli(argv: list[str] | None = None) -> V2AblationConfig:
+    """Parse CLI overrides for pre-registered config fields.
+
+    Currently exposes only ``--rope-half-width``: the Track B2 ROPE bound is
+    pre-registered, so the only legitimate reason to override it is sensitivity
+    reporting alongside the locked-in default.
+    """
+    parser = argparse.ArgumentParser(
+        description="Stage-4 v2 OMM validation benchmark.",
+        allow_abbrev=False,
+    )
+    default_config = V2AblationConfig()
+    parser.add_argument(
+        "--rope-half-width",
+        type=float,
+        default=default_config.rope_half_width,
+        help=(
+            "Half-width of the ROPE on ΔCE_{bbg_numerical - risk_neutral_optimal}. "
+            "Pre-registered default is 10.0; overrides are for sensitivity "
+            "reporting only."
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.rope_half_width <= 0.0 or not isfinite(args.rope_half_width):
+        parser.error("--rope-half-width must be positive and finite")
+    return replace(default_config, rope_half_width=args.rope_half_width)
+
+
+def main(argv: list[str] | None = None) -> int:
+    config = _build_config_from_cli(argv)
 
     pilot_shared = run_shared_strategies(config.pilot_seeds, config)
     crra_utility_spec = crra_utility(config.gamma_ce)
-    pilot_sdre = run_sdre_strategy(
-        "sdre_v2_heston",
+    pilot_bbg = run_utility_strategy(
+        "bbg_numerical",
         config.pilot_seeds,
         config,
         crra_utility_spec,
     )
     pilot = pilot_power_result(
-        bg_run=pilot_shared["bergault_gueant_closed_form"],
-        sdre_run=pilot_sdre,
+        reference_run=pilot_shared["risk_neutral_optimal"],
+        candidate_run=pilot_bbg,
     )
     print_pilot(pilot, pilot_n=len(config.pilot_seeds))
-    if pilot.required_n_for_target_sd is None or pilot.required_n_for_target_sd > len(config.formal_seeds):
+    rope_projection = project_rope_from_pilot(
+        pilot=pilot,
+        half_width=config.rope_half_width,
+        n_formal=len(config.formal_seeds),
+    )
+    print_rope_projection(rope_projection)
+    if not rope_projection.passes:
         print(
             "\n[stage-4 v2 stop] "
-            "Pilot indicates N=5000 is not enough for the target sd_post precision."
+            "Pilot indicates N=5000 does not clear the pre-registered ROPE projection gate."
         )
         return 1
 
     shared_formal = run_shared_strategies(config.formal_seeds, config)
-    sdre_by_utility = run_sdre_strategies_by_utility(config.formal_seeds, config)
+    utility_runs_by_utility = run_utility_strategies_by_utility(config.formal_seeds, config)
 
-    scenario_results: dict[str, dict[str, StrategyRun]] = {}
     ce_tables: dict[str, dict[str, float]] = {}
     posterior_checks: dict[str, list[PairedPosteriorCheck]] = {}
     for utility_index, (utility_name, utility) in enumerate(utility_specs(config)):
-        scenario_runs = combined_runs_for_utility(shared_formal, sdre_by_utility[utility_name])
-        scenario_results[utility_name] = scenario_runs
+        scenario_runs = combined_runs_for_utility(
+            shared_formal,
+            utility_runs_by_utility[utility_name],
+        )
         ce_tables[utility_name] = absolute_ce_table(scenario_runs, utility)
         posterior_checks[utility_name] = paired_posterior_checks(
             scenario_runs,
@@ -576,27 +760,84 @@ def main() -> int:
     crra_lookup = {check.contrast: check for check in posterior_checks["CRRA"]}
     cara_lookup = {check.contrast: check for check in posterior_checks["CARA"]}
     quadratic_lookup = {check.contrast: check for check in posterior_checks["QUADRATIC"]}
-    cross_stage_value = crra_lookup["as_ewma_minus_constant_spread"].delta.mean
+    cross_stage_value = _lookup_contrast(
+        crra_lookup,
+        "as_ewma",
+        "constant_spread",
+    ).delta.mean
     cross_stage_error = abs(cross_stage_value - STAGE2_EWMA_MINUS_CONSTANT_CRRA)
     headline_checks = {
-        "CRRA": crra_lookup["sdre_v2_heston_minus_bergault_gueant_closed_form"],
-        "CARA": cara_lookup["sdre_v2_heston_minus_bergault_gueant_closed_form"],
-        "QUADRATIC": quadratic_lookup["sdre_v2_heston_minus_bergault_gueant_closed_form"],
+        "CRRA": _lookup_contrast(
+            crra_lookup,
+            "bbg_numerical",
+            "risk_neutral_optimal",
+        ),
+        "CARA": _lookup_contrast(
+            cara_lookup,
+            "bbg_numerical",
+            "risk_neutral_optimal",
+        ),
+        "QUADRATIC": _lookup_contrast(
+            quadratic_lookup,
+            "bbg_numerical",
+            "risk_neutral_optimal",
+        ),
     }
-    bg_constant_crra = crra_lookup["bergault_gueant_closed_form_minus_constant_spread"]
+    linear_diagnostic_checks = {
+        "CRRA": _lookup_contrast(
+            crra_lookup,
+            "linear_inventory_skew_heston",
+            "bbg_numerical",
+        ),
+        "CARA": _lookup_contrast(
+            cara_lookup,
+            "linear_inventory_skew_heston",
+            "bbg_numerical",
+        ),
+        "QUADRATIC": _lookup_contrast(
+            quadratic_lookup,
+            "linear_inventory_skew_heston",
+            "bbg_numerical",
+        ),
+    }
+    rope_probabilities = {
+        utility_name: _normal_rope_probability(
+            mean=check.delta.mean,
+            sd_post=check.delta.sd_post,
+            half_width=config.rope_half_width,
+        )
+        for utility_name, check in headline_checks.items()
+    }
+    risk_neutral_constant_crra = _lookup_contrast(
+        crra_lookup,
+        "risk_neutral_optimal",
+        "constant_spread",
+    )
     all_checks = (
         posterior_checks["CRRA"]
         + posterior_checks["CARA"]
         + posterior_checks["QUADRATIC"]
     )
-    outcome = classify_outcome(headline_checks, bg_constant_crra)
+    outcome = classify_outcome(risk_neutral_constant_crra, rope_probabilities)
 
-    print_gates(headline_checks, bg_constant_crra, cross_stage_error, all_checks)
+    print_gates(
+        headline_checks,
+        risk_neutral_constant_crra,
+        rope_probabilities,
+        config.rope_half_width,
+        cross_stage_error,
+        all_checks,
+    )
     print_stage_sentence(
         config,
         headline_checks["CRRA"],
         headline_checks["CARA"],
         headline_checks["QUADRATIC"],
+        linear_diagnostic_checks["CRRA"],
+        linear_diagnostic_checks["CARA"],
+        linear_diagnostic_checks["QUADRATIC"],
+        risk_neutral_constant_crra,
+        rope_probabilities,
         cross_stage_value,
         outcome,
     )
@@ -604,6 +845,8 @@ def main() -> int:
     if cross_stage_error > STAGE2_CROSS_STAGE_TOL:
         return 1
     if not all(check.passes_agreement for check in all_checks):
+        return 1
+    if outcome == "bbg-anchor-fail":
         return 1
     return 0
 

@@ -134,10 +134,10 @@ def constant_spread(
     )
 
 
-def make_bergault_gueant_closed_form(
+def make_risk_neutral_optimal(
     env: OptionMarketMakingEnv,
 ) -> EpisodeController:
-    """Factory for the BG/AS risk-neutral analytic baseline at ±1/k."""
+    """Factory for the risk-neutral symmetric optimum at ±1/k."""
     half_spread = 1.0 / env.fills.distance_slope
 
     def controller(state: OptionMMState, history: Any | None = None) -> OptionMMAction:
@@ -151,12 +151,12 @@ def make_bergault_gueant_closed_form(
     return controller
 
 
-def make_sdre_controller_v2(
+def make_linear_inventory_skew(
     env: OptionMarketMakingEnv,
     inventory_variance_estimator: InventoryVarianceEstimator,
     utility: UtilitySpec,
 ) -> EpisodeController:
-    """Factory for the Stage 4 v2 multiplier-corrected BG+Davis-Lleo controller."""
+    """Factory for the legacy first-order inventory-skew diagnostic controller."""
     multiplier = env.contract.contract_multiplier
     distance_slope = env.fills.distance_slope
     dt = env.dt
@@ -183,6 +183,11 @@ def make_sdre_controller_v2(
         )
 
     return controller
+
+
+# Legacy aliases kept for historical experiment compatibility.
+make_bergault_gueant_closed_form = make_risk_neutral_optimal
+make_sdre_controller_v2 = make_linear_inventory_skew
 
 
 def avellaneda_stoikov(

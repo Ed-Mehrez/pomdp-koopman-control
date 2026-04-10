@@ -1,0 +1,35 @@
+[1/3] long+slow+high-xi / CARA (xi=1.0, kappa=1.0, H=60, N=20000)
+  ΔCE=-9.6076  sd_post=8.9995  P(>0)=0.142856  95% CrI=[-27.25, 8.03]
+  MC check: mean=-9.5210  sd_post=8.9608  P(>0)=0.146400
+[2/3] long+slow+high-xi / CRRA (xi=1.0, kappa=1.0, H=60, N=20000)
+  ΔCE=-10.2257  sd_post=9.0057  P(>0)=0.128091  95% CrI=[-27.88, 7.43]
+  MC check: mean=-10.1390  sd_post=8.9671  P(>0)=0.130500
+[3/3] long-horizon+high-xi / CARA (xi=1.0, kappa=2.0, H=60, N=20000)
+  ΔCE=-11.1261  sd_post=9.0351  P(>0)=0.109082  95% CrI=[-28.83, 6.58]
+  MC check: mean=-11.0387  sd_post=8.9976  P(>0)=0.110500
+
+==========================================================================================
+ORACLE CONFIRMATION — N=20000, oracle SDRE vs BG (zero skew)
+Decision rule: P(>0) >= 0.95 in at least one cell → channel alive
+==========================================================================================
+
+  [NOT CONFIRMED] long+slow+high-xi / CARA  (xi=1.0, kappa=1.0, H=60)
+    BG CE:     100180.7585
+    Oracle CE: 100171.1509
+    ΔCE (oracle - BG): -9.6076 ± 8.9995  P(>0) = 0.142856
+    95% CrI: [-27.25, 8.03]
+
+  [NOT CONFIRMED] long+slow+high-xi / CRRA  (xi=1.0, kappa=1.0, H=60)
+    BG CE:     100180.7704
+    Oracle CE: 100170.5447
+    ΔCE (oracle - BG): -10.2257 ± 9.0057  P(>0) = 0.128091
+    95% CrI: [-27.88, 7.43]
+
+  [NOT CONFIRMED] long-horizon+high-xi / CARA  (xi=1.0, kappa=2.0, H=60)
+    BG CE:     100178.5647
+    Oracle CE: 100167.4386
+    ΔCE (oracle - BG): -11.1261 ± 9.0351  P(>0) = 0.109082
+    95% CrI: [-28.83, 6.58]
+
+------------------------------------------------------------------------------------------
+VERDICT: Channel NOT CONFIRMED at P>=0.95. Best cell: long+slow+high-xi/CARA at P=0.1429. Kill the sigma_sq_inv estimation channel for OMM.

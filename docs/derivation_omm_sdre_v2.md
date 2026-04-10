@@ -562,7 +562,7 @@ The SDRE controller's empirical sliding-window estimator works without modificat
 
 ### 11.3 Stage 5 experimental design
 
-Three envs (Heston, 3/2, SABR), same controllers, same paired-bootstrap discipline. Pre-registered ship rule: SDRE with the empirical estimator beats `avellaneda_stoikov_ewma` on each non-Heston env at `P(>0) ≥ 0.95`. The Heston env continues to validate against the BG closed form.
+Three envs (Heston, 3/2, SABR), same controllers, same paired Bayesian posterior inference discipline. Pre-registered ship rule: SDRE with the empirical estimator beats `avellaneda_stoikov_ewma` on each non-Heston env at `P(>0) ≥ 0.95`. The Heston env continues to validate against the BG closed form.
 
 **Codex action for v2**: only implement Heston. Verify that the `inventory_variance_estimator` callable interface is general enough that adding 3/2 and SABR estimators in Stage 5 is purely additive (new functions, no changes to the controller). If the interface needs adjustment to accommodate Stage 5 envs, raise it during the audit before implementing.
 

@@ -1,0 +1,116 @@
+
+[pilot power calc]
+  N=200 mean_diff=-7.134105 per_seed_sd=105.573530 per_seed_snr=0.067575 target_sd_post=0.500000 required_N_for_target~44584
+
+[pilot ROPE projection (Track B2 secondary)]
+  PASS  half_width=±10.000000 N_formal=5000 projected_sd_post=1.493035 projected_P(ΔCE in ROPE)=0.972540 threshold=0.95
+
+[strategy summaries, CRRA]
+  no_quote                 terminal_wealth= 100000.000000 total_pnl= 0.000000 spread= 0.000000 net_delta_rms= 0.000000
+  constant_spread          terminal_wealth= 100031.763608 total_pnl= 31.763608 spread= 30.552300 net_delta_rms= 87.509742
+  as_ewma                  terminal_wealth= 100057.782860 total_pnl= 57.782860 spread= 58.613081 net_delta_rms= 58.954062
+  bergault_gueant_closed_form terminal_wealth= 100062.943698 total_pnl= 62.943698 spread= 58.593600 net_delta_rms= 20.014155
+  sdre_v2_heston           terminal_wealth= 100060.308451 total_pnl= 60.308451 spread= 58.577147 net_delta_rms= 20.035707
+  sdre_v2_empirical        terminal_wealth= 100061.009556 total_pnl= 61.009556 spread= 58.598678 net_delta_rms= 20.035781
+
+[absolute CE, CRRA]
+  no_quote                    100000.000000
+  constant_spread             100029.967014
+  as_ewma                     100056.934803
+  bergault_gueant_closed_form    100061.976289
+  sdre_v2_heston              100059.389245
+  sdre_v2_empirical           100060.074987
+
+[pairwise posterior checks, CRRA]
+  no_quote_minus_constant_spread                       delta_mean=-29.967014 delta_sd_post= 5.995586 delta_P(>0)= 0.000000 mc_mean=-29.901618 mc_sd_post= 5.907052 mean_rel= 0.002182 sd_post_rel= 0.014767
+  no_quote_minus_as_ewma                               delta_mean=-56.934803 delta_sd_post= 4.118353 delta_P(>0)= 0.000000 mc_mean=-56.977907 mc_sd_post= 4.100933 mean_rel= 0.000756 sd_post_rel= 0.004230
+  no_quote_minus_bergault_gueant_closed_form           delta_mean=-61.976289 delta_sd_post= 4.399019 delta_P(>0)= 0.000000 mc_mean=-62.049148 mc_sd_post= 4.446777 mean_rel= 0.001174 sd_post_rel= 0.010740
+  no_quote_minus_sdre_v2_heston                        delta_mean=-59.389245 delta_sd_post= 4.288072 delta_P(>0)= 0.000000 mc_mean=-59.378177 mc_sd_post= 4.338766 mean_rel= 0.000186 sd_post_rel= 0.011684
+  no_quote_minus_sdre_v2_empirical                     delta_mean=-60.074987 delta_sd_post= 4.323686 delta_P(>0)= 0.000000 mc_mean=-60.095200 mc_sd_post= 4.306522 mean_rel= 0.000336 sd_post_rel= 0.003970
+  constant_spread_minus_as_ewma                        delta_mean=-26.967790 delta_sd_post= 6.599571 delta_P(>0)= 0.000022 mc_mean=-26.935880 mc_sd_post= 6.624148 mean_rel= 0.001183 sd_post_rel= 0.003710
+  constant_spread_minus_bergault_gueant_closed_form    delta_mean=-32.009275 delta_sd_post= 7.263117 delta_P(>0)= 0.000005 mc_mean=-31.861594 mc_sd_post= 7.333320 mean_rel= 0.004614 sd_post_rel= 0.009573
+  constant_spread_minus_sdre_v2_heston                 delta_mean=-29.422232 delta_sd_post= 7.214793 delta_P(>0)= 0.000023 mc_mean=-29.493976 mc_sd_post= 7.124486 mean_rel= 0.002433 sd_post_rel= 0.012517
+  constant_spread_minus_sdre_v2_empirical              delta_mean=-30.107974 delta_sd_post= 7.231480 delta_P(>0)= 0.000016 mc_mean=-30.201812 mc_sd_post= 7.243925 mean_rel= 0.003107 sd_post_rel= 0.001718
+  as_ewma_minus_bergault_gueant_closed_form            delta_mean=-5.041486 delta_sd_post= 5.066345 delta_P(>0)= 0.159845 mc_mean=-4.985740 mc_sd_post= 5.161427 mean_rel= 0.011057 sd_post_rel= 0.018422
+  as_ewma_minus_sdre_v2_heston                         delta_mean=-2.454442 delta_sd_post= 5.052500 delta_P(>0)= 0.313559 mc_mean=-2.520912 mc_sd_post= 5.092907 mean_rel= 0.026368 sd_post_rel= 0.007934
+  as_ewma_minus_sdre_v2_empirical                      delta_mean=-3.140184 delta_sd_post= 5.041667 delta_P(>0)= 0.266693 mc_mean=-3.140092 mc_sd_post= 5.029545 mean_rel= 0.000029 sd_post_rel= 0.002404
+  bergault_gueant_closed_form_minus_sdre_v2_heston     delta_mean= 2.587044 delta_sd_post= 1.248153 delta_P(>0)= 0.980900 mc_mean= 2.587485 mc_sd_post= 1.248480 mean_rel= 0.000170 sd_post_rel= 0.000262
+  bergault_gueant_closed_form_minus_sdre_v2_empirical  delta_mean= 1.901302 delta_sd_post= 1.005735 delta_P(>0)= 0.970652 mc_mean= 1.893982 mc_sd_post= 1.002248 mean_rel= 0.003850 sd_post_rel= 0.003467
+  sdre_v2_heston_minus_sdre_v2_empirical               delta_mean=-0.685742 delta_sd_post= 0.955985 delta_P(>0)= 0.236590 mc_mean=-0.678044 mc_sd_post= 0.941171 mean_rel= 0.011227 sd_post_rel= 0.015495
+
+[strategy summaries, CARA]
+  no_quote                 terminal_wealth= 100000.000000 total_pnl= 0.000000 spread= 0.000000 net_delta_rms= 0.000000
+  constant_spread          terminal_wealth= 100031.763608 total_pnl= 31.763608 spread= 30.552300 net_delta_rms= 87.509742
+  as_ewma                  terminal_wealth= 100057.782860 total_pnl= 57.782860 spread= 58.613081 net_delta_rms= 58.954062
+  bergault_gueant_closed_form terminal_wealth= 100062.943698 total_pnl= 62.943698 spread= 58.593600 net_delta_rms= 20.014155
+  sdre_v2_heston           terminal_wealth= 100060.304155 total_pnl= 60.304155 spread= 58.565272 net_delta_rms= 20.033028
+  sdre_v2_empirical        terminal_wealth= 100061.009566 total_pnl= 61.009566 spread= 58.598688 net_delta_rms= 20.035781
+
+[absolute CE, CARA]
+  no_quote                    100000.000000
+  constant_spread             100029.966429
+  as_ewma                     100056.934098
+  bergault_gueant_closed_form    100061.975479
+  sdre_v2_heston              100059.384306
+  sdre_v2_empirical           100060.074237
+
+[pairwise posterior checks, CARA]
+  no_quote_minus_constant_spread                       delta_mean=-29.966429 delta_sd_post= 5.995209 delta_P(>0)= 0.000000 mc_mean=-29.915546 mc_sd_post= 5.963399 mean_rel= 0.001698 sd_post_rel= 0.005306
+  no_quote_minus_as_ewma                               delta_mean=-56.934098 delta_sd_post= 4.118263 delta_P(>0)= 0.000000 mc_mean=-56.871411 mc_sd_post= 4.175028 mean_rel= 0.001101 sd_post_rel= 0.013596
+  no_quote_minus_bergault_gueant_closed_form           delta_mean=-61.975479 delta_sd_post= 4.398929 delta_P(>0)= 0.000000 mc_mean=-61.958429 mc_sd_post= 4.394000 mean_rel= 0.000275 sd_post_rel= 0.001120
+  no_quote_minus_sdre_v2_heston                        delta_mean=-59.384306 delta_sd_post= 4.287785 delta_P(>0)= 0.000000 mc_mean=-59.411451 mc_sd_post= 4.309078 mean_rel= 0.000457 sd_post_rel= 0.004941
+  no_quote_minus_sdre_v2_empirical                     delta_mean=-60.074237 delta_sd_post= 4.323597 delta_P(>0)= 0.000000 mc_mean=-60.112257 mc_sd_post= 4.324048 mean_rel= 0.000632 sd_post_rel= 0.000104
+  constant_spread_minus_as_ewma                        delta_mean=-26.967669 delta_sd_post= 6.599205 delta_P(>0)= 0.000022 mc_mean=-26.889140 mc_sd_post= 6.459311 mean_rel= 0.002912 sd_post_rel= 0.021199
+  constant_spread_minus_bergault_gueant_closed_form    delta_mean=-32.009050 delta_sd_post= 7.262767 delta_P(>0)= 0.000005 mc_mean=-32.155904 mc_sd_post= 7.308778 mean_rel= 0.004567 sd_post_rel= 0.006295
+  constant_spread_minus_sdre_v2_heston                 delta_mean=-29.417877 delta_sd_post= 7.214375 delta_P(>0)= 0.000023 mc_mean=-29.501929 mc_sd_post= 7.298459 mean_rel= 0.002849 sd_post_rel= 0.011521
+  constant_spread_minus_sdre_v2_empirical              delta_mean=-30.107807 delta_sd_post= 7.231128 delta_P(>0)= 0.000016 mc_mean=-30.133274 mc_sd_post= 7.177156 mean_rel= 0.000845 sd_post_rel= 0.007464
+  as_ewma_minus_bergault_gueant_closed_form            delta_mean=-5.041380 delta_sd_post= 5.066234 delta_P(>0)= 0.159845 mc_mean=-5.040638 mc_sd_post= 5.080135 mean_rel= 0.000147 sd_post_rel= 0.002736
+  as_ewma_minus_sdre_v2_heston                         delta_mean=-2.450207 delta_sd_post= 5.052212 delta_P(>0)= 0.313846 mc_mean=-2.399094 mc_sd_post= 5.007724 mean_rel= 0.020861 sd_post_rel= 0.008806
+  as_ewma_minus_sdre_v2_empirical                      delta_mean=-3.140138 delta_sd_post= 5.041557 delta_P(>0)= 0.266691 mc_mean=-3.262616 mc_sd_post= 5.098025 mean_rel= 0.037540 sd_post_rel= 0.011076
+  bergault_gueant_closed_form_minus_sdre_v2_heston     delta_mean= 2.591173 delta_sd_post= 1.247878 delta_P(>0)= 0.981074 mc_mean= 2.575897 mc_sd_post= 1.244258 mean_rel= 0.005895 sd_post_rel= 0.002901
+  bergault_gueant_closed_form_minus_sdre_v2_empirical  delta_mean= 1.901242 delta_sd_post= 1.005717 delta_P(>0)= 0.970650 mc_mean= 1.929069 mc_sd_post= 1.006301 mean_rel= 0.014425 sd_post_rel= 0.000580
+  sdre_v2_heston_minus_sdre_v2_empirical               delta_mean=-0.689931 delta_sd_post= 0.955897 delta_P(>0)= 0.235220 mc_mean=-0.696625 mc_sd_post= 0.960662 mean_rel= 0.009609 sd_post_rel= 0.004960
+
+[strategy summaries, QUADRATIC]
+  no_quote                 terminal_wealth= 100000.000000 total_pnl= 0.000000 spread= 0.000000 net_delta_rms= 0.000000
+  constant_spread          terminal_wealth= 100031.763608 total_pnl= 31.763608 spread= 30.552300 net_delta_rms= 87.509742
+  as_ewma                  terminal_wealth= 100057.782860 total_pnl= 57.782860 spread= 58.613081 net_delta_rms= 58.954062
+  bergault_gueant_closed_form terminal_wealth= 100062.943698 total_pnl= 62.943698 spread= 58.593600 net_delta_rms= 20.014155
+  sdre_v2_heston           terminal_wealth= 100060.304180 total_pnl= 60.304180 spread= 58.565297 net_delta_rms= 20.033028
+  sdre_v2_empirical        terminal_wealth= 100061.036190 total_pnl= 61.036190 spread= 58.602769 net_delta_rms= 20.036393
+
+[absolute CE, QUADRATIC]
+  no_quote                    100000.000000
+  constant_spread             100029.964919
+  as_ewma                     100056.932630
+  bergault_gueant_closed_form    100061.973796
+  sdre_v2_heston              100059.382815
+  sdre_v2_empirical           100060.099214
+
+[pairwise posterior checks, QUADRATIC]
+  no_quote_minus_constant_spread                       delta_mean=-29.964919 delta_sd_post= 5.994452 delta_P(>0)= 0.000000 mc_mean=-30.033734 mc_sd_post= 6.057389 mean_rel= 0.002291 sd_post_rel= 0.010390
+  no_quote_minus_as_ewma                               delta_mean=-56.932630 delta_sd_post= 4.118081 delta_P(>0)= 0.000000 mc_mean=-56.887908 mc_sd_post= 4.197871 mean_rel= 0.000786 sd_post_rel= 0.019007
+  no_quote_minus_bergault_gueant_closed_form           delta_mean=-61.973796 delta_sd_post= 4.398748 delta_P(>0)= 0.000000 mc_mean=-61.990894 mc_sd_post= 4.308686 mean_rel= 0.000276 sd_post_rel= 0.020474
+  no_quote_minus_sdre_v2_heston                        delta_mean=-59.382815 delta_sd_post= 4.287613 delta_P(>0)= 0.000000 mc_mean=-59.294548 mc_sd_post= 4.287624 mean_rel= 0.001486 sd_post_rel= 0.000002
+  no_quote_minus_sdre_v2_empirical                     delta_mean=-60.099214 delta_sd_post= 4.323574 delta_P(>0)= 0.000000 mc_mean=-60.203626 mc_sd_post= 4.389193 mean_rel= 0.001734 sd_post_rel= 0.014950
+  constant_spread_minus_as_ewma                        delta_mean=-26.967711 delta_sd_post= 6.598470 delta_P(>0)= 0.000022 mc_mean=-26.851499 mc_sd_post= 6.532507 mean_rel= 0.004309 sd_post_rel= 0.009997
+  constant_spread_minus_bergault_gueant_closed_form    delta_mean=-32.008877 delta_sd_post= 7.262064 delta_P(>0)= 0.000005 mc_mean=-32.041141 mc_sd_post= 7.292298 mean_rel= 0.001007 sd_post_rel= 0.004146
+  constant_spread_minus_sdre_v2_heston                 delta_mean=-29.417897 delta_sd_post= 7.213675 delta_P(>0)= 0.000023 mc_mean=-29.450529 mc_sd_post= 7.113907 mean_rel= 0.001108 sd_post_rel= 0.013830
+  constant_spread_minus_sdre_v2_empirical              delta_mean=-30.134295 delta_sd_post= 7.230335 delta_P(>0)= 0.000015 mc_mean=-30.219648 mc_sd_post= 7.128892 mean_rel= 0.002824 sd_post_rel= 0.014030
+  as_ewma_minus_bergault_gueant_closed_form            delta_mean=-5.041166 delta_sd_post= 5.066012 delta_P(>0)= 0.159845 mc_mean=-5.017872 mc_sd_post= 4.939229 mean_rel= 0.004621 sd_post_rel= 0.025026
+  as_ewma_minus_sdre_v2_heston                         delta_mean=-2.450185 delta_sd_post= 5.051995 delta_P(>0)= 0.313840 mc_mean=-2.439039 mc_sd_post= 5.055581 mean_rel= 0.004549 sd_post_rel= 0.000709
+  as_ewma_minus_sdre_v2_empirical                      delta_mean=-3.166584 delta_sd_post= 5.041402 delta_P(>0)= 0.264964 mc_mean=-3.185595 mc_sd_post= 5.061064 mean_rel= 0.005968 sd_post_rel= 0.003885
+  bergault_gueant_closed_form_minus_sdre_v2_heston     delta_mean= 2.590980 delta_sd_post= 1.247821 delta_P(>0)= 0.981072 mc_mean= 2.572301 mc_sd_post= 1.246634 mean_rel= 0.007209 sd_post_rel= 0.000952
+  bergault_gueant_closed_form_minus_sdre_v2_empirical  delta_mean= 1.874581 delta_sd_post= 1.005344 delta_P(>0)= 0.968882 mc_mean= 1.877946 mc_sd_post= 1.022592 mean_rel= 0.001792 sd_post_rel= 0.016867
+  sdre_v2_heston_minus_sdre_v2_empirical               delta_mean=-0.716399 delta_sd_post= 0.956215 delta_P(>0)= 0.226868 mc_mean=-0.718506 mc_sd_post= 0.957505 mean_rel= 0.002933 sd_post_rel= 0.001347
+
+[stage-4 v2 gates]
+  PASS  CRRA P(ΔCE_{sdre_v2_heston - BG} in ±10) >= 0.95: P=1.000000
+  PASS  CARA P(ΔCE_{sdre_v2_heston - BG} in ±10) >= 0.95: P=1.000000
+  INFO  QUADRATIC P(ΔCE_{sdre_v2_heston - BG} in ±10) = 1.000000 (descriptive only)
+  PASS  CRRA BG minus constant_spread P(>0) >= 0.99: P=0.999995
+  PASS  EWMA-constant reproduces Stage-2 CRRA delta CE: error=0
+  PASS  delta-vs-MC agreement <= 5% for all reported contrasts: max_mean_rel=0.037540, max_sd_post_rel=0.025026
+
+[stage-4 v2 sentence]
+On 5000 paired seeds (same SeedSequence(20260407) as Stages 2/3), under CRRA(gamma=2) bergault_gueant_closed_form achieves delta CE vs constant_spread = 32.009275 with sd_post = 7.263117 and P(>0) = 0.999995. The secondary SDRE-vs-BG equivalence check gives CRRA P(in ±10) = 1.000000 and CARA P(in ±10) = 1.000000. Under CRRA, sdre_v2_heston achieves delta CE vs bergault_gueant_closed_form = -2.587044 with sd_post = 1.248153 and P(>0) = 0.019100. Under CARA(alpha=2.0e-05), delta CE = -2.591173 with sd_post = 1.247878 and P(>0) = 0.018926. Under quadratic(k=6.7e-06), delta CE = -2.590980 with sd_post = 1.247821 and P(>0) = 0.018928. EWMA-constant reproduces the Stage-2 CRRA delta CE 26.967790. The result supports v2-validation.

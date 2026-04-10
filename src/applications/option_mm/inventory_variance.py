@@ -20,17 +20,14 @@ def _normal_pdf(x: float) -> float:
     return exp(-0.5 * x * x) / SQRT_TWO_PI
 
 
-def _compute_constant_vega_per_share(
-    env: OptionMarketMakingEnv,
-    initial_state: OptionMMState,
+def bs_vega_per_share(
+    spot: float,
+    strike: float,
+    tau: float,
+    variance: float,
+    rate: float,
 ) -> float:
-    """Black-Scholes call vega per share, frozen at episode start."""
-    spot = initial_state.spot
-    strike = initial_state.strike
-    tau = initial_state.time_to_maturity
-    variance = initial_state.variance
-    rate = env.heston.rate
-
+    """Black-Scholes call vega per share."""
     if spot <= 0.0 or strike <= 0.0:
         raise ValueError("spot and strike must be positive")
     if tau <= 0.0:
@@ -45,12 +42,26 @@ def _compute_constant_vega_per_share(
     return float(spot * sqrt(tau) * _normal_pdf(d1))
 
 
+def compute_constant_vega_per_share(
+    env: OptionMarketMakingEnv,
+    initial_state: OptionMMState,
+) -> float:
+    """Black-Scholes call vega per share, frozen at episode start."""
+    return bs_vega_per_share(
+        spot=initial_state.spot,
+        strike=initial_state.strike,
+        tau=initial_state.time_to_maturity,
+        variance=initial_state.variance,
+        rate=env.heston.rate,
+    )
+
+
 def bergault_gueant_heston_estimator(
     env: OptionMarketMakingEnv,
     initial_state: OptionMMState,
 ) -> InventoryVarianceEstimator:
     """Return the BG Heston inventory-variance estimator, frozen per episode."""
-    vega_per_share = _compute_constant_vega_per_share(env, initial_state)
+    vega_per_share = compute_constant_vega_per_share(env, initial_state)
     vega_contract = env.contract.contract_multiplier * vega_per_share
     xi = env.heston.xi
     sigma_sq_inv = float((vega_contract * vega_contract * xi * xi) / 4.0)
@@ -58,6 +69,35 @@ def bergault_gueant_heston_estimator(
     def estimator(state: OptionMMState, history: Any | None = None) -> float:
         del state, history
         return sigma_sq_inv
+
+    return estimator
+
+
+def oracle_heston_estimator(
+    env: OptionMarketMakingEnv,
+) -> InventoryVarianceEstimator:
+    """Oracle estimator: recomputes σ²_inv from true Heston V at every step.
+
+    Uses the same BG formula as ``bergault_gueant_heston_estimator`` but
+    recomputes BS vega per share using ``state.variance`` (the simulator's
+    true instantaneous variance) at each call, rather than freezing at
+    episode start. This is an upper bound on any data-driven estimator.
+    """
+    multiplier = env.contract.contract_multiplier
+    xi = env.heston.xi
+    rate = env.heston.rate
+
+    def estimator(state: OptionMMState, history: Any | None = None) -> float:
+        del history
+        vega_per_share = bs_vega_per_share(
+            spot=state.spot,
+            strike=state.strike,
+            tau=state.time_to_maturity,
+            variance=state.variance,
+            rate=rate,
+        )
+        vega_contract = multiplier * vega_per_share
+        return float((vega_contract * vega_contract * xi * xi) / 4.0)
 
     return estimator
 

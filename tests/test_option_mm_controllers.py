@@ -17,17 +17,19 @@ from applications.option_mm.controllers import (  # noqa: E402
     avellaneda_stoikov,
     constant_spread,
     linear_inventory_rule,
-    make_bergault_gueant_closed_form,
-    make_sdre_controller_v2,
+    make_linear_inventory_skew,
+    make_risk_neutral_optimal,
     no_quote,
     sdre_controller,
 )
+from applications.option_mm.bbg_solver import make_bbg_numerical  # noqa: E402
 from applications.option_mm.env import OptionMarketMakingEnv  # noqa: E402
 from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
 from applications.option_mm.metrics import (  # noqa: E402
+    UtilitySpec,
     cara_utility,
     crra_utility,
     quadratic_utility,
@@ -175,11 +177,11 @@ def test_augmented_contexts_validate_parameters():
         )
 
 
-def test_bergault_gueant_closed_form_is_symmetric_at_1_over_k():
+def test_risk_neutral_optimal_is_symmetric_at_1_over_k():
     env = OptionMarketMakingEnv(seed=1)
     state = env.reset()
     state = replace(state, option_inventory=3, net_delta=12.5)
-    controller = make_bergault_gueant_closed_form(env)
+    controller = make_risk_neutral_optimal(env)
 
     action = controller(state)
 
@@ -188,25 +190,73 @@ def test_bergault_gueant_closed_form_is_symmetric_at_1_over_k():
     assert action.hedge_trade == pytest.approx(-12.5)
 
 
-def test_sdre_v2_recovers_bg_at_zero_inventory():
+def test_linear_inventory_skew_recovers_risk_neutral_at_zero_inventory():
     env = OptionMarketMakingEnv(seed=1, initial_cash=100_000.0)
     state = env.reset()
     state = replace(state, net_delta=7.0)
-    bg_controller = make_bergault_gueant_closed_form(env)
+    baseline_controller = make_risk_neutral_optimal(env)
     estimator = bergault_gueant_heston_estimator(env, state)
-    sdre_v2 = make_sdre_controller_v2(env, estimator, crra_utility(2.0))
+    linear_skew = make_linear_inventory_skew(env, estimator, crra_utility(2.0))
 
-    assert sdre_v2(state) == bg_controller(state)
+    assert linear_skew(state) == baseline_controller(state)
 
 
-def test_sdre_v2_inventory_skew_sign_long_inventory():
+def test_linear_inventory_skew_reduces_to_risk_neutral_when_arrow_pratt_is_zero():
+    """Track A identity check: AP(W) -> 0 must give bit-identical risk-neutral quotes.
+
+    The linear-inventory-skew controller is risk-neutral quoting plus an
+    Arrow-Pratt skew correction. In the
+    AP(W) -> 0 limit the correction must vanish exactly, not approximately.
+    Uses a stub UtilitySpec returning ``arrow_pratt = 0.0`` and a constant
+    inventory variance estimator so the reduction is bit-identical at every
+    step on a fixed seed, with non-trivial option inventory and net delta to
+    actually exercise the AP code path. If this test fails, the AP -> BG
+    reduction in ``make_linear_inventory_skew`` is broken and the benchmark
+    downstream gates are meaningless.
+    """
+    env = OptionMarketMakingEnv(seed=1, initial_cash=100_000.0)
+    state = env.reset()
+    state = replace(state, option_inventory=3, net_delta=12.5)
+
+    zero_ap_utility = UtilitySpec(
+        u=lambda wealth: 0.0 * wealth,
+        ce=lambda mean_u: 0.0,
+        ce_grad=lambda mean_u: 0.0,
+        arrow_pratt=lambda wealth: 0.0,
+        requires_positive_wealth=False,
+    )
+    constant_estimator = lambda state, history=None: 1.0  # noqa: E731
+
+    baseline_controller = make_risk_neutral_optimal(env)
+    linear_skew = make_linear_inventory_skew(env, constant_estimator, zero_ap_utility)
+
+    n_steps_checked = 0
+    while not state.done:
+        action_baseline = baseline_controller(state)
+        action_linear = linear_skew(state)
+        assert action_linear.bid_price == pytest.approx(
+            action_baseline.bid_price, abs=1e-12, rel=0.0
+        )
+        assert action_linear.ask_price == pytest.approx(
+            action_baseline.ask_price, abs=1e-12, rel=0.0
+        )
+        assert action_linear.hedge_trade == pytest.approx(
+            action_baseline.hedge_trade, abs=1e-12, rel=0.0
+        )
+        n_steps_checked += 1
+        state, _, _, _ = env.step(action_linear)
+
+    assert n_steps_checked == env.horizon_steps
+
+
+def test_linear_inventory_skew_sign_long_inventory():
     env = OptionMarketMakingEnv(seed=1)
     state = env.reset()
     state = replace(state, option_inventory=1, net_delta=0.0)
     estimator = bergault_gueant_heston_estimator(env, state)
-    sdre_v2 = make_sdre_controller_v2(env, estimator, cara_utility(1.0e-3))
+    linear_skew = make_linear_inventory_skew(env, estimator, cara_utility(1.0e-3))
 
-    action = sdre_v2(state)
+    action = linear_skew(state)
     bid_distance = state.option_mid - action.bid_price
     ask_distance = action.ask_price - state.option_mid
 
@@ -215,14 +265,14 @@ def test_sdre_v2_inventory_skew_sign_long_inventory():
     assert ask_distance < bid_distance
 
 
-def test_sdre_v2_inventory_skew_sign_short_inventory():
+def test_linear_inventory_skew_sign_short_inventory():
     env = OptionMarketMakingEnv(seed=1)
     state = env.reset()
     state = replace(state, option_inventory=-1, net_delta=0.0)
     estimator = bergault_gueant_heston_estimator(env, state)
-    sdre_v2 = make_sdre_controller_v2(env, estimator, cara_utility(1.0e-3))
+    linear_skew = make_linear_inventory_skew(env, estimator, cara_utility(1.0e-3))
 
-    action = sdre_v2(state)
+    action = linear_skew(state)
     bid_distance = state.option_mid - action.bid_price
     ask_distance = action.ask_price - state.option_mid
 
@@ -231,18 +281,69 @@ def test_sdre_v2_inventory_skew_sign_short_inventory():
     assert bid_distance < ask_distance
 
 
-def test_sdre_v2_magnitude_crra_2_at_w_1e5():
+def test_linear_inventory_skew_magnitude_crra_2_at_w_1e5():
     env = OptionMarketMakingEnv(seed=1)
     state = env.reset()
     state = replace(state, option_inventory=1, wealth=100_000.0, net_delta=0.0)
     estimator = bergault_gueant_heston_estimator(env, state)
-    sdre_v2 = make_sdre_controller_v2(env, estimator, crra_utility(2.0))
+    linear_skew = make_linear_inventory_skew(env, estimator, crra_utility(2.0))
 
-    action = sdre_v2(state)
+    action = linear_skew(state)
     bid_distance = state.option_mid - action.bid_price
     inventory_skew = bid_distance - 0.2
 
     assert 0.012 <= inventory_skew <= 0.020
+
+
+def test_bbg_numerical_reduces_to_risk_neutral_at_gamma_zero():
+    env = OptionMarketMakingEnv(seed=1)
+    state = env.reset()
+    state = replace(state, option_inventory=3, net_delta=12.5)
+    baseline_controller = make_risk_neutral_optimal(env)
+    bbg_controller = make_bbg_numerical(
+        env,
+        state,
+        gamma=0.0,
+        max_inventory=10,
+    )
+
+    n_steps_checked = 0
+    while not state.done:
+        action_baseline = baseline_controller(state)
+        action_bbg = bbg_controller(state)
+        assert action_bbg.bid_price == pytest.approx(
+            action_baseline.bid_price, abs=1e-6, rel=0.0
+        )
+        assert action_bbg.ask_price == pytest.approx(
+            action_baseline.ask_price, abs=1e-6, rel=0.0
+        )
+        assert action_bbg.hedge_trade == pytest.approx(
+            action_baseline.hedge_trade, abs=1e-12, rel=0.0
+        )
+        n_steps_checked += 1
+        state, _, _, _ = env.step(action_bbg)
+
+    assert n_steps_checked == env.horizon_steps
+
+
+def test_bbg_numerical_skews_quotes_with_inventory_at_positive_gamma():
+    env = OptionMarketMakingEnv(seed=1)
+    state = env.reset()
+    state = replace(state, option_inventory=1, net_delta=0.0)
+    controller = make_bbg_numerical(
+        env,
+        state,
+        gamma=2.0e-5,
+        max_inventory=10,
+    )
+
+    action = controller(state)
+    bid_distance = state.option_mid - action.bid_price
+    ask_distance = action.ask_price - state.option_mid
+
+    assert bid_distance > 0.2
+    assert ask_distance < 0.2
+    assert ask_distance < bid_distance
 
 
 def test_arrow_pratt_factories():
