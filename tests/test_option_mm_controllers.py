@@ -28,6 +28,13 @@ from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from applications.option_mm.hybrid_residual_controller import (  # noqa: E402
+    BBGQuoteLookup,
+    HybridTrainingBuffer,
+    collect_hybrid_training_data,
+    make_hybrid_residual_controller,
+    train_hybrid_residual_model,
+)
 from applications.option_mm.local_kernel_controller import (  # noqa: E402
     KernelRewardModel,
     TrainingBuffer,
@@ -602,3 +609,160 @@ class TestMakeLocalKernelController:
         state = env.reset()
         with pytest.raises(RuntimeError):
             make_local_kernel_controller(env, model, state)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid BBG prior + residual controller tests
+# ---------------------------------------------------------------------------
+
+
+class TestBBGQuoteLookup:
+    def test_action_matches_make_bbg_numerical(self):
+        """BBGQuoteLookup.action must produce identical quotes to make_bbg_numerical."""
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=42)
+        state = env.reset()
+        gamma = 2.0 / state.wealth
+
+        bbg_ctrl = make_bbg_numerical(env, state, gamma=gamma, max_inventory=10)
+        lookup = BBGQuoteLookup(env, state, gamma=gamma, max_inventory=10)
+
+        # Run a few steps and compare
+        for _ in range(5):
+            a_ctrl = bbg_ctrl(state)
+            a_lookup = lookup.action(state)
+            assert a_ctrl.bid_price == pytest.approx(a_lookup.bid_price, abs=1e-12)
+            assert a_ctrl.ask_price == pytest.approx(a_lookup.ask_price, abs=1e-12)
+            assert a_ctrl.hedge_trade == pytest.approx(a_lookup.hedge_trade, abs=1e-12)
+            state, _, _, _ = env.step(a_ctrl)
+            if state.done:
+                break
+
+    def test_distances_are_finite_and_nonnegative(self):
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=1)
+        state = env.reset()
+        lookup = BBGQuoteLookup(env, state, gamma=2e-5, max_inventory=10)
+        bd, ad = lookup.distances(state)
+        assert bd >= 0.0
+        assert ad >= 0.0
+        assert np.isfinite(bd)
+        assert np.isfinite(ad)
+
+
+class TestHybridTrainingBuffer:
+    def test_add_and_size(self):
+        buf = HybridTrainingBuffer()
+        assert buf.size == 0
+        buf.add(np.array([1.0, 2.0, 3.0, 4.0]), np.array([0.01, -0.005]), 3.14)
+        assert buf.size == 1
+
+    def test_as_arrays(self):
+        buf = HybridTrainingBuffer()
+        buf.add(np.zeros(4), np.array([0.01, 0.0]), 1.0)
+        buf.add(np.ones(4), np.array([-0.01, 0.005]), 2.0)
+        f, p, r = buf.as_arrays()
+        assert f.shape == (2, 4)
+        assert p.shape == (2, 2)
+        assert r.shape == (2,)
+
+
+class TestCollectHybridTrainingData:
+    def test_collects_paired_data(self):
+        buf = collect_hybrid_training_data(
+            seeds=(0, 1), horizon_steps=5, noise_width=0.02, noise_skew=0.01,
+        )
+        assert buf.size == 10  # 2 seeds x 5 steps
+        f, p, r = buf.as_arrays()
+        assert f.shape == (10, 4)
+        assert p.shape == (10, 2)  # (Δwidth, Δskew)
+        assert np.all(np.isfinite(f))
+        assert np.all(np.isfinite(p))
+        assert np.all(np.isfinite(r))
+
+
+class TestHybridResidualController:
+    def _make_tiny_model(self):
+        return train_hybrid_residual_model(
+            training_seeds=(0, 1, 2, 3, 4),
+            horizon_steps=5,
+            max_training_samples=200,
+        )
+
+    def test_zero_perturbation_recovers_bbg(self):
+        """With stencil = {(0,0)}, hybrid must return exactly BBG quotes."""
+        model = self._make_tiny_model()
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=99)
+        state = env.reset()
+
+        # Hybrid with stencil that only includes (0, 0)
+        hybrid = make_hybrid_residual_controller(
+            env, model, state,
+            stencil_width=(0.0,),
+            stencil_skew=(0.0,),
+        )
+        # Reference BBG
+        gamma_local = 2.0 / state.wealth
+        bbg = make_bbg_numerical(env, state, gamma=gamma_local, max_inventory=10)
+
+        for _ in range(5):
+            a_hybrid = hybrid(state)
+            a_bbg = bbg(state)
+            assert a_hybrid.bid_price == pytest.approx(a_bbg.bid_price, abs=1e-12)
+            assert a_hybrid.ask_price == pytest.approx(a_bbg.ask_price, abs=1e-12)
+            assert a_hybrid.hedge_trade == pytest.approx(a_bbg.hedge_trade, abs=1e-12)
+            state, _, _, _ = env.step(a_hybrid)
+            if state.done:
+                break
+
+    def test_controller_produces_valid_actions(self):
+        model = self._make_tiny_model()
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=77)
+        state = env.reset()
+        hybrid = make_hybrid_residual_controller(env, model, state)
+
+        while not state.done:
+            action = hybrid(state)
+            assert action.bid_price >= 0.0
+            assert action.ask_price >= action.bid_price
+            assert np.isfinite(action.hedge_trade)
+            state, _, _, _ = env.step(action)
+
+    def test_positive_delta_width_widens_quotes(self):
+        """A positive Δwidth should increase both bid and ask distance from mid."""
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=1)
+        state = env.reset()
+        gamma_local = 2.0 / state.wealth
+        lookup = BBGQuoteLookup(env, state, gamma=gamma_local, max_inventory=10)
+        a_base = lookup.action(state)
+
+        from applications.option_mm.hybrid_residual_controller import _apply_perturbation
+        bid_dist_0, ask_dist_0 = lookup.distances(state)
+        a_wide = _apply_perturbation(state, bid_dist_0, ask_dist_0, 0.05, 0.0)
+
+        # Wider bid distance => lower bid price
+        assert a_wide.bid_price <= a_base.bid_price + 1e-12
+        # Wider ask distance => higher ask price
+        assert a_wide.ask_price >= a_base.ask_price - 1e-12
+
+    def test_positive_delta_skew_widens_bid_tightens_ask(self):
+        """Positive Δskew adds to bid distance, subtracts from ask distance."""
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=1)
+        state = env.reset()
+        gamma_local = 2.0 / state.wealth
+        lookup = BBGQuoteLookup(env, state, gamma=gamma_local, max_inventory=10)
+        bid_dist_0, ask_dist_0 = lookup.distances(state)
+
+        from applications.option_mm.hybrid_residual_controller import _apply_perturbation
+        a_skew = _apply_perturbation(state, bid_dist_0, ask_dist_0, 0.0, 0.03)
+        a_base = lookup.action(state)
+
+        # Bid wider (lower price)
+        assert a_skew.bid_price <= a_base.bid_price + 1e-12
+        # Ask tighter (lower price, closer to mid)
+        assert a_skew.ask_price <= a_base.ask_price + 1e-12
+
+    def test_unfitted_model_raises(self):
+        model = KernelRewardModel()
+        env = OptionMarketMakingEnv(initial_cash=100_000.0, seed=1)
+        state = env.reset()
+        with pytest.raises(RuntimeError):
+            make_hybrid_residual_controller(env, model, state)

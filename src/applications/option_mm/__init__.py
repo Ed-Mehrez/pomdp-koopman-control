@@ -38,6 +38,15 @@ from .inventory_variance import (
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from .hybrid_residual_controller import (
+    BBGQuoteLookup,
+    HybridTrainingBuffer,
+    collect_hybrid_training_data,
+    collect_hybrid_training_data_multi_cell,
+    make_hybrid_residual_controller,
+    train_hybrid_residual_model,
+    train_hybrid_residual_model_multi_cell,
+)
 from .local_kernel_controller import (
     KernelRewardModel,
     TrainingBuffer,
@@ -103,6 +112,13 @@ __all__ = [
     "median_bandwidth",
     "train_local_kernel_model",
     "TrainingBuffer",
+    "BBGQuoteLookup",
+    "HybridTrainingBuffer",
+    "collect_hybrid_training_data",
+    "collect_hybrid_training_data_multi_cell",
+    "make_hybrid_residual_controller",
+    "train_hybrid_residual_model",
+    "train_hybrid_residual_model_multi_cell",
     "linear_inventory_rule",
     "make_linear_inventory_skew",
     "make_risk_neutral_optimal",

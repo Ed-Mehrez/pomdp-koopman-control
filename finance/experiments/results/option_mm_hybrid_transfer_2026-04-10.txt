@@ -1,0 +1,11 @@
+Hybrid BBG + Residual: Held-Out Heston Transfer Benchmark
+Date: 2026-04-10
+Train cells: 8, Test cells: 3
+Train eps/cell: 20, Test eps/cell: 20
+
+Test cell: kappa=2.0, xi=0.5, rho=-0.7
+  hybrid - bbg: mean=49.152, sd_post=25.240, P(>0)=0.97426
+Test cell: kappa=2.25, xi=0.4, rho=-0.6
+  hybrid - bbg: mean=34.698, sd_post=24.188, P(>0)=0.92429
+Test cell: kappa=1.75, xi=0.6, rho=-0.8
+  hybrid - bbg: mean=67.390, sd_post=33.036, P(>0)=0.97932
