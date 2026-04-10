@@ -1,0 +1,107 @@
+======================================================================
+  FORMAL: Hybrid BBG + Residual — Anti-Tautology Audit
+======================================================================
+
+Training cells: 8 (2x2x2 grid)
+Test cells:     3 (interpolated)
+Train eps/cell: 100  |  Test eps/cell: 50
+Utility: CRRA(gamma=2.0)
+
+--- Training ---
+  Data: 16000 tuples, fitted on 10000 (bw=3.139)
+  Time: 40.1s
+
+--- 1.1 Global-Best-Stencil Baseline ---
+  Best perturbation from training: Δwidth=+0.0135, Δskew=-0.0238
+  Mean training reward at that point: 61.8558
+
+--- 1.3 Permuted-Label Null ---
+  Permuted model fitted (same bandwidth/ridge, shuffled rewards)
+
+======================================================================
+  HELD-OUT CELLS — Formal Evaluation
+======================================================================
+
+  --- TEST CELL: kappa=2.0, xi=0.5, rho=-0.7 ---
+
+  Strategy                                      CE   Spread Cap
+  -------------------------------------------------------------
+  risk_neutral_optimal                  100039.957       61.970
+  bbg_numerical                         100030.200       62.135
+  bbg_global_best_stencil               100042.117       54.731
+  hybrid_bbg_residual                   100025.537       57.224
+  hybrid_permuted_labels                100034.490       59.853
+
+  Contrast                                                    Mean  sd_post    P(>0)
+  ---------------------------------------------------------------------------------
+  hybrid_bbg_residual - bbg_numerical                       -4.664   34.906  0.44686
+  bbg_global_best_stencil - bbg_numerical                   11.916   23.981  0.69038
+  hybrid_bbg_residual - bbg_global_best_stencil            -16.580   44.470  0.35464
+  hybrid_permuted_labels - bbg_numerical                     4.290   26.531  0.56422
+
+  kappa=2.0, xi=0.5, rho=-0.7 perturbation usage (N=1000):
+    mean Δwidth = -0.000585
+    mean Δskew  = 0.006185
+    fraction at (0,0) = 0.000
+    top 5 stencil points:
+      (-0.0300, +0.0150)  freq=329/1000 (32.9%)
+      (+0.0300, +0.0000)  freq=176/1000 (17.6%)
+      (+0.0000, +0.0150)  freq=98/1000 (9.8%)
+      (+0.0300, +0.0150)  freq=96/1000 (9.6%)
+      (-0.0300, -0.0150)  freq=58/1000 (5.8%)
+
+  --- TEST CELL: kappa=2.25, xi=0.4, rho=-0.6 ---
+
+  Strategy                                      CE   Spread Cap
+  -------------------------------------------------------------
+  risk_neutral_optimal                  100044.742       61.970
+  bbg_numerical                         100037.182       62.016
+  bbg_global_best_stencil               100039.882       55.207
+  hybrid_bbg_residual                   100025.015       58.027
+  hybrid_permuted_labels                100035.501       59.715
+
+  Contrast                                                    Mean  sd_post    P(>0)
+  ---------------------------------------------------------------------------------
+  hybrid_bbg_residual - bbg_numerical                      -12.166   29.464  0.33983
+  bbg_global_best_stencil - bbg_numerical                    2.700   20.096  0.55344
+  hybrid_bbg_residual - bbg_global_best_stencil            -14.866   37.774  0.34695
+  hybrid_permuted_labels - bbg_numerical                    -1.681   22.380  0.47007
+
+  kappa=2.25, xi=0.4, rho=-0.6 perturbation usage (N=1000):
+    mean Δwidth = -0.000765
+    mean Δskew  = 0.006140
+    fraction at (0,0) = 0.000
+    top 5 stencil points:
+      (-0.0300, +0.0150)  freq=326/1000 (32.6%)
+      (+0.0300, +0.0000)  freq=175/1000 (17.5%)
+      (+0.0000, +0.0150)  freq=105/1000 (10.5%)
+      (+0.0300, +0.0150)  freq=97/1000 (9.7%)
+      (-0.0300, -0.0150)  freq=59/1000 (5.9%)
+
+  --- TEST CELL: kappa=1.75, xi=0.6, rho=-0.8 ---
+
+  Strategy                                      CE   Spread Cap
+  -------------------------------------------------------------
+  risk_neutral_optimal                  100038.009       61.970
+  bbg_numerical                         100027.864       61.827
+  bbg_global_best_stencil               100040.555       54.812
+  hybrid_bbg_residual                   100035.512       56.999
+  hybrid_permuted_labels                100033.972       60.029
+
+  Contrast                                                    Mean  sd_post    P(>0)
+  ---------------------------------------------------------------------------------
+  hybrid_bbg_residual - bbg_numerical                        7.648   40.211  0.57543
+  bbg_global_best_stencil - bbg_numerical                   12.691   29.108  0.66858
+  hybrid_bbg_residual - bbg_global_best_stencil             -5.042   50.489  0.46022
+  hybrid_permuted_labels - bbg_numerical                     6.108   31.132  0.57777
+
+  kappa=1.75, xi=0.6, rho=-0.8 perturbation usage (N=1000):
+    mean Δwidth = -0.000195
+    mean Δskew  = 0.006385
+    fraction at (0,0) = 0.000
+    top 5 stencil points:
+      (-0.0300, +0.0150)  freq=324/1000 (32.4%)
+      (+0.0300, +0.0000)  freq=179/1000 (17.9%)
+      (+0.0000, +0.0150)  freq=107/1000 (10.7%)
+      (+0.0300, +0.0150)  freq=97/1000 (9.7%)
+      (-0.0300, -0.0150)  freq=57/1000 (5.7%)
