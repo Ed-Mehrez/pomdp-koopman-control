@@ -1,9 +1,47 @@
-# OMM Research Plan — Koopman-SDRE for Options Market Making
+# OMM Research Plan — Belief-State Control for Options Market Making
 
-**Status**: Stage 4 v1 complete (publishable null), Stage 4 v2 in design (now dynamics-agnostic).
+**Status**: Salvage-plan restructuring (2026-04-10). Three tracks: (A) clean benchmark, (B) model-free local control, (C) exact-recovery rebuild.
 **Purpose**: Single source of truth for the OMM research arc. Survives session compaction. Read this first before planning new work or asking codex to implement anything.
-**Last updated**: 2026-04-08 (added dynamics-agnostic / fSDE direction; revised derivation note; new references doc)
+**Last updated**: 2026-04-10 (salvage-plan restructuring; σ²_inv channel frozen; three-track framing)
 **Owner**: Ed Mehrez (PhD, financial economics) + Claude (methodology audit) + Codex (implementation).
+
+## 0. Salvage-plan restructuring (2026-04-10)
+
+### Thesis spine (narrowed)
+
+> We study **belief-state control for partially observed financial systems**.
+> In regimes with a known analytic benchmark, the method should **recover** the benchmark.
+> In regimes where the benchmark is incomplete or unavailable, **data-driven local control on belief/path features** should add value.
+
+Heston OMM is a **benchmark and calibration environment**, not the main methodological contribution. The main contribution is a **model-free controller** that learns directly from belief/path features.
+
+### Three-track structure
+
+| Track | Purpose | Deliverable |
+|-------|---------|-------------|
+| **A — Clean benchmark** | Make Heston OMM scientifically honest and stable | Compare `risk_neutral_optimal`, `bbg_numerical`, `linear_inventory_skew`, heuristic anchors. If BBG ≈ risk-neutral at low gamma, that's calibration success, not failure. |
+| **B — Model-free local control (MAIN)** | Put the POMDP/Koopman/data-driven idea where it can matter | Local kernel controller learning reward landscape from belief/path features. Compare against BBG baselines. This is the real contribution. |
+| **C — Exact-recovery rebuild** | Restore confidence in the framework core | One clean Merton or LQG/POMDP benchmark with tests, reproducible script, writeup. |
+
+### Frozen / quarantined
+
+1. **σ²_inv estimation channel**: negative under tested Heston regimes. See `docs/note_sigma_sq_inv_channel_negative.md`. Do not expand.
+2. **Legacy A-S result path** (`option_mm_gating.py`): historical artifact, not a foundation.
+3. **Filter ablation path** (`option_mm_filter_ablation.py`): historical artifact.
+4. **Stage 4 v1 heuristic control comparisons**: publishable null, frozen.
+5. **Generic "SDRE works across envs" claim**: not strong enough yet.
+6. **Framework-first abstraction** (no new `src/control/`, no controller registry).
+7. **Claim that "improving variance estimation will unlock OMM gains"**: oracle screening says no.
+
+### Trusted and reused
+
+- OMM env + wealth accounting + paired Bayesian inference (`env.py`, `metrics.py`, `option_mm_ablation_v2.py`)
+- Belief-state/filter interface (`beliefs.py`)
+- Path-feature machinery (`streaming_sig_kkf.py`, `online_path_features.py`)
+- BBG baseline layer (`bbg_solver.py`, `controllers.py`)
+- Test suite (`test_option_mm_controllers.py`)
+
+---
 
 ## Companion documents (read these for the full picture)
 
@@ -26,17 +64,19 @@ Codex should never bring fSDE / signature / Koopman CdC machinery into v2, even 
 
 ## 1. Stage status summary
 
-| Stage | Status | Headline result |
-|---|---|---|
-| 0 — Shared core extraction | Partial | Inline-on-demand only; no `src/control/sdre.py` framework yet |
-| 1 — Env + smoke (`option_mm_env.py`, `option_mm_smoke.py`) | **DONE** | All 10 smoke checks pass at N=500 then N=5000. √T inventory scaling within 2%. Censoring 0%. Variance floor binding 0.02%. Split RNG (`path_rng`, `fill_rng`, `tie_rng`) verified. |
-| 2 — Beliefs (EWMA) + A-S gating (`beliefs.py`, `controllers.py`, `option_mm_gating.py`) | **DONE** | A-S-EWMA beats constant-spread. CRRA(γ=2) ΔCE = 26.97 ± 6.60, P(>0) = 0.99998. CARA(α=0.001) ΔCE = 84.55 ± 12.30, P(>0) ≈ 1.0. Spread capture 1.92×, net delta RMS 0.67×. |
-| 3 — Filter ablation (`option_mm_filter_ablation.py`) | **DONE** | Filter quality saturated. Total spread among {oracle, BPF, RecSig, EWMA} = 0.138 CE units vs total controller gap of 26.97 CE. Filter accounts for ~0.5% of advantage. **EWMA is sufficient for Stage 4.** Sub-finding: smoothed filters slightly *exceed* oracle because A-S is mis-specified for stochastic vol. |
-| 4 v1 — Heuristic SDRE vs heuristic linear | **DONE (publishable null)** | SDRE ties linear-rule at N=5000. Audit revealed v1 SDRE was missing spread-capture revenue, hedge transaction costs, and proper finite-horizon handling. Linear rule was heuristic, not analytical. |
-| 4 v2 — Bergault-Guéant HJB + general-utility SDRE | **NEXT** | This document specifies the design. |
-| 5 — Robustness across utilities and parameter regimes | Planned | Pre-register additional Heston regimes and utility classes |
-| 6 — Buehler-style deep RL comparison | Planned | Show SDRE achieves comparable performance at fraction of compute cost |
-| 7 — Real Alpaca options data replay | Deferred | Out of scope until v6 lands |
+| Stage | Track | Status | Headline result |
+|---|---|---|---|
+| 0 — Shared core extraction | — | Partial | Inline-on-demand only; no `src/control/sdre.py` framework yet |
+| 1 — Env + smoke | A | **DONE** | All 10 smoke checks pass. Split RNG verified. |
+| 2 — Beliefs (EWMA) + A-S gating | A | **DONE (locked)** | A-S-EWMA beats constant-spread. ΔCE = 26.97 ± 6.60, P(>0) = 0.99998. |
+| 3 — Filter ablation | A | **DONE (locked)** | Filter quality <0.5% of controller advantage. EWMA sufficient. |
+| 4 v1 — Heuristic SDRE vs heuristic linear | A | **DONE (frozen null)** | Both heuristic A-S extensions; not a real methodology test. |
+| 4 v2 — BBG re-anchor (checkpointed) | A | **CHECKPOINTED** | BBG numerical solver, oracle/empirical estimators, closed-form inventory skew. σ²_inv channel negative. |
+| **Track B — Model-free local kernel controller** | **B** | **ACTIVE** | New: learn reward landscape directly from belief/path features. |
+| **Track C — Exact-recovery benchmark rebuild** | **C** | Planned | One clean Merton or LQG/POMDP benchmark. |
+| 5 — Robustness across utilities and parameter regimes | A/B | Planned | Pre-register additional Heston regimes and utility classes |
+| 6 — Buehler-style deep RL comparison | B | Planned | Compare model-free controller to deep Bellman hedging |
+| 7 — Real Alpaca options data replay | — | Deferred | Out of scope until Track B lands |
 
 ---
 

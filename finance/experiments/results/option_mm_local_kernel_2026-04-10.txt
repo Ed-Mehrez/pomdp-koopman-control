@@ -1,0 +1,15 @@
+Track B: Local Kernel Controller Experiment
+Date: 2026-04-10
+Training episodes: 200
+Test episodes: 50
+Utility: CRRA(gamma=2.0)
+
+risk_neutral_optimal: CE=100064.570, wealth_mean=100065.655
+bbg_numerical: CE=100069.888, wealth_mean=100070.944
+linear_inventory_skew_oracle: CE=100069.512, wealth_mean=100070.570
+local_kernel: CE=100042.844, wealth_mean=100043.538
+
+Paired contrasts vs risk_neutral_optimal:
+  bbg_numerical: mean=5.318, sd_post=3.832, P(>0)=0.91739
+  linear_inventory_skew_oracle: mean=4.942, sd_post=3.833, P(>0)=0.90135
+  local_kernel: mean=-21.726, sd_post=35.093, P(>0)=0.26793

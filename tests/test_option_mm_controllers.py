@@ -28,12 +28,23 @@ from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from applications.option_mm.local_kernel_controller import (  # noqa: E402
+    KernelRewardModel,
+    TrainingBuffer,
+    collect_training_data,
+    extract_state_features,
+    make_local_kernel_controller,
+    median_bandwidth,
+    train_local_kernel_model,
+)
 from applications.option_mm.metrics import (  # noqa: E402
     UtilitySpec,
     cara_utility,
     crra_utility,
     quadratic_utility,
 )
+
+import numpy as np  # noqa: E402
 
 
 def test_no_quote_returns_unfillable_quotes():
@@ -424,3 +435,170 @@ def test_empirical_and_bg_estimators_time_average_are_same_order_on_heston():
                 horizon_remaining=20.0 / 252.0,
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Local kernel controller tests (Track B)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractStateFeatures:
+    def test_returns_4d_vector(self):
+        env = OptionMarketMakingEnv(seed=1)
+        state = env.reset()
+        feat = extract_state_features(state, env, v_hat=0.04)
+        assert feat.shape == (4,)
+
+    def test_zero_inventory_gives_zero_q_norm(self):
+        env = OptionMarketMakingEnv(seed=1)
+        state = env.reset()
+        feat = extract_state_features(state, env, v_hat=0.04)
+        assert feat[0] == 0.0  # q_norm at reset is zero
+
+    def test_tau_frac_is_one_at_reset(self):
+        env = OptionMarketMakingEnv(seed=1)
+        state = env.reset()
+        feat = extract_state_features(state, env, v_hat=0.04)
+        assert feat[2] == pytest.approx(1.0)
+
+    def test_v_hat_norm_is_one_at_theta(self):
+        env = OptionMarketMakingEnv(seed=1)
+        state = env.reset()
+        feat = extract_state_features(state, env, v_hat=env.heston.theta)
+        assert feat[3] == pytest.approx(1.0)
+
+
+class TestKernelRewardModel:
+    def test_fit_and_predict_shape(self):
+        rng = np.random.default_rng(42)
+        n = 50
+        features = rng.standard_normal((n, 4))
+        actions = rng.standard_normal((n, 2))
+        rewards = rng.standard_normal(n)
+
+        model = KernelRewardModel(bandwidth=1.0, ridge_alpha=1e-2)
+        model.fit(features, actions, rewards)
+        assert model.is_fitted
+
+        pred = model.predict(features[:5], actions[:5])
+        assert pred.shape == (5,)
+        assert np.all(np.isfinite(pred))
+
+    def test_prediction_interpolates_training_data(self):
+        rng = np.random.default_rng(42)
+        n = 30
+        features = rng.standard_normal((n, 4))
+        actions = rng.standard_normal((n, 2))
+        # Simple linear target to test interpolation
+        rewards = features[:, 0] + 2.0 * actions[:, 0]
+
+        model = KernelRewardModel(bandwidth=1.0, ridge_alpha=1e-4)
+        model.fit(features, actions, rewards)
+        pred = model.predict(features, actions)
+
+        # With low ridge and training points, should interpolate well
+        residuals = np.abs(pred - rewards)
+        assert np.mean(residuals) < 1.0
+
+    def test_unfitted_model_raises(self):
+        model = KernelRewardModel()
+        with pytest.raises(RuntimeError):
+            model.predict(np.zeros((1, 4)), np.zeros((1, 2)))
+
+    def test_invalid_bandwidth_raises(self):
+        with pytest.raises(ValueError):
+            KernelRewardModel(bandwidth=-1.0)
+        with pytest.raises(ValueError):
+            KernelRewardModel(bandwidth=0.0)
+
+
+class TestTrainingBuffer:
+    def test_add_and_size(self):
+        buf = TrainingBuffer()
+        assert buf.size == 0
+
+        buf.add(np.array([1.0, 2.0]), np.array([0.5, 0.1]), 3.14)
+        assert buf.size == 1
+
+    def test_as_arrays(self):
+        buf = TrainingBuffer()
+        buf.add(np.array([1.0, 2.0]), np.array([0.5]), 1.0)
+        buf.add(np.array([3.0, 4.0]), np.array([0.6]), 2.0)
+        f, a, r = buf.as_arrays()
+        assert f.shape == (2, 2)
+        assert a.shape == (2, 1)
+        assert r.shape == (2,)
+
+
+class TestCollectTrainingData:
+    def test_collects_data(self):
+        buf = collect_training_data(seeds=(0, 1), horizon_steps=5)
+        assert buf.size == 10  # 2 seeds x 5 steps each
+        f, a, r = buf.as_arrays()
+        assert f.shape == (10, 4)
+        assert a.shape == (10, 2)
+        assert np.all(np.isfinite(f))
+        assert np.all(np.isfinite(a))
+        assert np.all(np.isfinite(r))
+
+
+class TestMedianBandwidth:
+    def test_returns_positive(self):
+        rng = np.random.default_rng(42)
+        f = rng.standard_normal((100, 4))
+        a = rng.standard_normal((100, 2))
+        bw = median_bandwidth(f, a)
+        assert bw > 0.0
+
+
+class TestMakeLocalKernelController:
+    def test_controller_produces_valid_actions(self):
+        # Train a tiny model
+        model = train_local_kernel_model(
+            training_seeds=(0, 1, 2),
+            horizon_steps=5,
+            max_training_samples=100,
+        )
+
+        # Deploy
+        env = OptionMarketMakingEnv(horizon_steps=5, seed=99)
+        state = env.reset()
+        controller = make_local_kernel_controller(env, model, state)
+
+        actions_seen = []
+        while not state.done:
+            action = controller(state)
+            assert action.bid_price >= 0.0
+            assert action.ask_price >= action.bid_price
+            assert np.isfinite(action.hedge_trade)
+            actions_seen.append(action)
+            state, _, _, _ = env.step(action)
+
+        assert len(actions_seen) == 5
+
+    def test_controller_runs_full_episode(self):
+        model = train_local_kernel_model(
+            training_seeds=tuple(range(5)),
+            horizon_steps=10,
+            max_training_samples=200,
+        )
+
+        env = OptionMarketMakingEnv(horizon_steps=10, seed=42)
+        state = env.reset()
+        controller = make_local_kernel_controller(env, model, state)
+
+        states = [state]
+        while not state.done:
+            action = controller(state)
+            state, _, _, _ = env.step(action)
+            states.append(state)
+
+        assert states[-1].done
+        assert np.isfinite(states[-1].wealth)
+
+    def test_unfitted_model_raises(self):
+        model = KernelRewardModel()
+        env = OptionMarketMakingEnv(seed=1)
+        state = env.reset()
+        with pytest.raises(RuntimeError):
+            make_local_kernel_controller(env, model, state)

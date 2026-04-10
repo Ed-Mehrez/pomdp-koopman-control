@@ -38,6 +38,15 @@ from .inventory_variance import (
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from .local_kernel_controller import (
+    KernelRewardModel,
+    TrainingBuffer,
+    collect_training_data,
+    extract_state_features,
+    make_local_kernel_controller,
+    median_bandwidth,
+    train_local_kernel_model,
+)
 from .metrics import (
     AggregateSummary,
     EpisodeSummary,
@@ -87,6 +96,13 @@ __all__ = [
     "constant_spread",
     "crra_utility",
     "empirical_sliding_window_estimator",
+    "extract_state_features",
+    "KernelRewardModel",
+    "collect_training_data",
+    "make_local_kernel_controller",
+    "median_bandwidth",
+    "train_local_kernel_model",
+    "TrainingBuffer",
     "linear_inventory_rule",
     "make_linear_inventory_skew",
     "make_risk_neutral_optimal",

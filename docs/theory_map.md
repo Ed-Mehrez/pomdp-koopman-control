@@ -290,16 +290,66 @@ flowchart TD
     C3 --> F3[Where the methodology should actually differentiate]
 ```
 
-## 10. Bottom line
+## 10. Salvage-plan restructuring (2026-04-10)
 
-If you want the shortest theory update possible, it is this:
+The project is now organized into three tracks:
 
-1. The project's real thesis is still **belief-state control via Koopman/signature structure**.
-2. The OMM Heston work has mostly been **calibration and benchmark construction** so far.
-3. That work was necessary, because it corrected the target and showed where the action is not.
-4. The strongest actual OMM finding so far is that **controller structure matters more than filter quality** in the daily Heston sandbox.
-5. The right interpretation of Stage 4 v2 is **recover BG under partial observation**, not “beat BG.”
-6. The genuinely distinctive methodology question is still ahead: **what happens when BG no longer applies?**
+### Track A — Clean benchmark lane
+Heston OMM as a scientifically honest calibration environment.
+`risk_neutral_optimal`, `bbg_numerical`, `linear_inventory_skew`, heuristic anchors.
+If `bbg_numerical ~ risk_neutral_optimal` at low gamma, that is calibration success, not failure.
+
+### Track B — Model-free local control (MAIN contribution)
+A model-free controller that learns the local reward/risk landscape directly
+from belief/path features (inventory, net_delta, tau, v_hat_ewma), bypassing
+the sigma_sq_inv estimation channel entirely.
+
+Initial implementation (`local_kernel_controller.py`): RBF kernel ridge
+regression on (state_features, action) -> spread reward. First pilot shows
+the kernel controller trails BBG baselines by ~22 CE at daily Heston with
+200 training episodes — expected, because per-step spread capture SNR is
+~0.07 at daily frequency. The analytic baselines dominate in-regime.
+
+**This is the informative result**: the Heston/BG regime is well-handled by
+analytic methods. Track B's distinctive value appears when the dynamics move
+outside the analytic-closed-form regime (rough vol, misspecified model,
+higher frequency, multi-strike).
+
+### Track C — One exact-recovery benchmark rebuilt cleanly
+Restore confidence in the framework core. One of: Merton exact recovery or
+a small LQG/POMDP benchmark, with reproducible script, tests, clean writeup.
+
+### Three-layer picture
+
+```mermaid
+flowchart TD
+    A[Layer 1: Trusted Core] --> A1[Env + accounting]
+    A --> A2[Bayesian paired evaluation]
+    A --> A3[Belief/filter interfaces]
+    A --> A4[Path-feature machinery]
+
+    B[Layer 2: Calibration Benchmarks] --> B1[Merton exact recovery]
+    B --> B2[Heston OMM: BBG numerical vs risk-neutral]
+
+    C[Layer 3: Main Research Claim] --> C1[Model-free local control on belief/path features]
+    C --> C2[Compare against analytic benchmarks where available]
+    C --> C3[Move to misspecified or richer regimes]
+```
+
+### Frozen items (do not expand)
+- sigma_sq_inv estimation channel (negative under Heston; see `docs/note_sigma_sq_inv_channel_negative.md`)
+- Legacy A-S result path, filter ablation path
+- Generic “SDRE works across envs” claim
+- Framework-first abstractions (`src/control/`, controller registry)
+
+## 11. Bottom line
+
+1. The project's real thesis is **belief-state control via Koopman/signature structure**.
+2. The OMM Heston work has been **calibration and benchmark construction**.
+3. The strongest OMM finding is that **controller structure matters more than filter quality** in daily Heston.
+4. The **sigma_sq_inv estimation channel is negative** under tested regimes — analytic methods dominate in-regime.
+5. The main methodological contribution moves to **Track B: model-free local control**.
+6. The genuinely distinctive question is still: **what happens when BG no longer applies?**
 
 ## 11. Pointers
 
