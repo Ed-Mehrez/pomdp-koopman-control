@@ -21,11 +21,13 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from applications.option_mm_bbg.spec import (
-    BBGBenchmarkConfig, BBGOptionBookSpec, BBGControlSpec,
+    BBGBenchmarkConfig, BBGHestonSpec, BBGOptionBookSpec, BBGControlSpec,
 )
 from applications.option_mm_bbg.env import OptionBookMarketMakingEnv, OptionBookMMAction
 from applications.option_mm_bbg.solver import (
     solve_bbg_value_function,
+    solve_bbg_value_function_no_gap,
+    solver_diagnostics,
     make_bbg_numerical_controller,
     make_bbg_risk_neutral_controller,
 )
@@ -41,24 +43,31 @@ def main() -> int:
     log("  BBG Single-Option Validation")
     log("=" * 60)
 
+    # Use no-gap config for stable validation (a_P = a_Q eliminates nu dependence)
+    # Vega limit sized to single-option: 2 fills max = 2 * z * V ~ 6.6M
     config = BBGBenchmarkConfig(
+        heston=BBGHestonSpec(kappa_p=3.0, theta_p=0.0225),  # match Q
         book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
+        control=BBGControlSpec(vega_limit=5.0e6),  # tighter for 1-option case
     )
     config.validate()
     log(f"\nConfig: K=10, T=1yr, gamma={config.control.gamma}")
     log(f"Horizon: {config.control.horizon} yr, S0={config.heston.spot0}, nu0={config.heston.nu0}")
+    log(f"Using no-gap solver (a_P = a_Q)")
 
-    # Solve HJB
+    # Solve HJB (no-gap: 2D on (t, V^pi))
     t0 = time.time()
-    log("\nSolving HJB...")
-    t_grid, nu_grid, vpi_grid, values = solve_bbg_value_function(
-        config, n_nu=10, n_vpi=80, n_time=60,
+    log("\nSolving HJB (no-gap)...")
+    t_grid, vpi_grid, values = solve_bbg_value_function_no_gap(
+        config, n_vpi=80, n_time=120,
     )
+    diag = solver_diagnostics(values)
     log(f"  Grid: {values.shape}, time: {time.time()-t0:.1f}s")
-    log(f"  Value range: [{values.min():.2f}, {values.max():.2f}]")
+    log(f"  Value range: [{diag['min']:.2f}, {diag['max']:.2f}]")
+    log(f"  Non-finite: {diag['n_nonfinite']}")
 
     # Build controllers
-    bbg_ctrl = make_bbg_numerical_controller(config, values, t_grid, nu_grid, vpi_grid)
+    bbg_ctrl = make_bbg_numerical_controller(config, values, t_grid, None, vpi_grid)
     rn_ctrl = make_bbg_risk_neutral_controller(config)
 
     # Run episodes

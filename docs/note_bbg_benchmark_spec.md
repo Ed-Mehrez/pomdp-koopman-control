@@ -81,6 +81,16 @@ paper's figures). We use notional = 500,000 EUR.
 
 The measures mu^{i,b} and mu^{i,a} are Dirac masses at z^i.
 
+### Scale-audit finding: one option exceeds vega limit per fill
+
+Under the current transcription, the K=12 T=1 option has z_i * V_i =
+11.68M which exceeds V_bar = 10M. This means a single fill from zero
+inventory would violate the hard vega cap. In the current implementation
+these fills are censored by the admissibility indicator `1_{|V^pi ± z V| <= V_bar}`.
+All other 19 options have z_i * V_i < V_bar (max ratio 0.682 for K=11 T=1).
+This is acceptable as a benchmark convention: the deep OTM short-maturity
+option is effectively excluded from zero-inventory trading.
+
 ### Important: intensity is NOT exponential
 
 The paper uses a **logistic** intensity, not the exponential A*exp(-k*delta)
@@ -176,7 +186,7 @@ The new package implements the paper's actual setup:
 |---------|---------|---------------|
 | Options | 1 | 20 (5 strikes x 4 maturities) |
 | Intensity | exponential A*exp(-k*delta) | logistic lambda/(1+exp(alpha+beta*delta/V)) |
-| Trade size | 1 contract | z^i = 5e6/O^i_0 contracts |
+| Trade size | 1 contract | z^i = 500k_EUR / O^i_0 contracts |
 | State | (q, h, V_hat, tau) | (t, nu, V^pi) |
 | Solver | backward ODE on q-grid | 3D PDE on (t, nu, V^pi) grid |
 | Horizon | ~20 trading days | ~0.3 trading day |

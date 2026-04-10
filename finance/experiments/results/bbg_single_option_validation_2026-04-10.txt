@@ -4,24 +4,26 @@
 
 Config: K=10, T=1yr, gamma=0.001
 Horizon: 0.0012 yr, S0=10.0, nu0=0.0225
+Using no-gap solver (a_P = a_Q)
 
-Solving HJB...
-  Grid: (61, 10, 80), time: 13.0s
-  Value range: [-2403808.22, 599200.95]
+Solving HJB (no-gap)...
+  Grid: (121, 80), time: 0.4s
+  Value range: [-33949.71, 29706.50]
+  Non-finite: 0
 
 Running 100 episodes...
 
   BBG numerical:
-    mean wealth: 0.0000
-    std wealth:  0.0000
-    mean spread capture: 0.0000
+    mean wealth: 42834.7944
+    std wealth:  42851.6322
+    mean spread capture: 42419.1511
 
   Risk-neutral:
-    mean wealth: 64007.3757
-    std wealth:  47297.5528
-    mean spread capture: 65396.5897
+    mean wealth: 46624.5612
+    std wealth:  37600.1667
+    mean spread capture: 47444.5847
 
   BBG - RiskNeutral:
-    mean diff: -64007.375662
-    sd_post:   4753.582918
-    P(>0):     0.00000
+    mean diff: -3789.766744
+    sd_post:   3611.687416
+    P(>0):     0.14702

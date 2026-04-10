@@ -24,9 +24,13 @@ from applications.option_mm_bbg.pricing import (
 )
 from applications.option_mm_bbg.env import OptionBookMarketMakingEnv, OptionBookMMAction
 from applications.option_mm_bbg.solver import (
+    HamiltonianTable,
     _hamiltonian_logistic,
     _optimal_quote_logistic,
+    _build_hamiltonian_tables,
     solve_bbg_value_function,
+    solve_bbg_value_function_no_gap,
+    solver_diagnostics,
     make_bbg_risk_neutral_controller,
     make_bbg_numerical_controller,
 )
@@ -145,9 +149,77 @@ class TestEnv:
         assert state.portfolio_vega == pytest.approx(expected_vega, abs=1e-10)
 
 
+class TestScaleAudit:
+    def test_all_initial_prices_positive(self):
+        config = BBGBenchmarkConfig.paper_default()
+        h = config.heston
+        for opt in config.book.options:
+            p = bs_call_price(h.spot0, opt.strike, opt.maturity, h.rate, h.nu0)
+            assert p > 0.0 and np.isfinite(p)
+
+    def test_all_vegas_positive(self):
+        config = BBGBenchmarkConfig.paper_default()
+        h = config.heston
+        for opt in config.book.options:
+            v = bs_call_vega_sqrt_nu(h.spot0, opt.strike, opt.maturity, h.rate, h.nu0)
+            assert v > 0.0 and np.isfinite(v)
+
+    def test_all_lambdas_positive(self):
+        config = BBGBenchmarkConfig.paper_default()
+        h = config.heston
+        liq = config.liquidity
+        for opt in config.book.options:
+            lam = liq.lambda_i(h.spot0, opt.strike)
+            assert lam > 0.0 and np.isfinite(lam)
+
+    def test_trade_sizes_positive(self):
+        config = BBGBenchmarkConfig.paper_default()
+        h = config.heston
+        liq = config.liquidity
+        for opt in config.book.options:
+            p = bs_call_price(h.spot0, opt.strike, opt.maturity, h.rate, h.nu0)
+            z = liq.trade_size(p)
+            assert z > 0.0 and np.isfinite(z)
+
+    def test_exactly_one_option_exceeds_vega_limit(self):
+        """K=12 T=1 is the only option with z_i*V_i > V_bar."""
+        config = BBGBenchmarkConfig.paper_default()
+        h = config.heston
+        liq = config.liquidity
+        n_exceed = 0
+        for opt in config.book.options:
+            p = bs_call_price(h.spot0, opt.strike, opt.maturity, h.rate, h.nu0)
+            v = bs_call_vega_sqrt_nu(h.spot0, opt.strike, opt.maturity, h.rate, h.nu0)
+            z = liq.trade_size(p)
+            if z * v > config.control.vega_limit:
+                n_exceed += 1
+                assert opt.strike == 12.0 and opt.maturity == 1.0
+        assert n_exceed == 1
+
+
+class TestHamiltonianTable:
+    def test_table_agrees_with_direct(self):
+        """Table interpolation should agree with direct optimization."""
+        table = HamiltonianTable(7560.0, 4.0, 0.7, 150.0, p_lo=-3.0, p_hi=3.0, n_p=2000)
+        for p in [-1.0, 0.0, 0.5, 1.5]:
+            h_direct = _hamiltonian_logistic(p, 7560.0, 4.0, 0.7, 150.0)
+            h_table = table.interp_H(p)
+            rel_err = abs(h_direct - h_table) / max(abs(h_direct), 1e-6)
+            assert rel_err < 0.05, f"H mismatch at p={p}: {h_direct} vs {h_table} (rel={rel_err:.3f})"
+
+    def test_delta_star_finite(self):
+        table = HamiltonianTable(7560.0, 4.0, 0.7, 150.0)
+        for p in [-1.0, 0.0, 1.0]:
+            d = table.interp_delta(p)
+            assert np.isfinite(d)
+
+    def test_h_nonnegative(self):
+        table = HamiltonianTable(7560.0, 4.0, 0.7, 150.0)
+        assert np.all(table.H_values >= -1e-10)
+
+
 class TestSolver:
     def test_hamiltonian_positive_at_p_zero(self):
-        # At p=0, sup Lambda(delta)*delta should be > 0
         h = _hamiltonian_logistic(0.0, 7560.0, 4.0, 0.7, 150.0)
         assert h > 0.0
 
@@ -157,7 +229,6 @@ class TestSolver:
         env = OptionBookMarketMakingEnv(config, seed=1)
         state = env.reset()
         action = ctrl(state)
-        # At gamma=0, bid and ask distances should be equal
         np.testing.assert_allclose(action.bid_distances, action.ask_distances, atol=1e-10)
 
     def test_risk_neutral_quotes_are_finite(self):
@@ -169,29 +240,65 @@ class TestSolver:
         assert np.all(np.isfinite(action.bid_distances))
         assert np.all(action.bid_distances > 0)
 
-    def test_single_option_solver_runs(self):
-        """Solve the HJB for a single-option book (cheapest validation)."""
+    def test_single_option_3d_solver_runs(self):
         config = BBGBenchmarkConfig(
             book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
-            control=BBGControlSpec(horizon=0.0012, gamma=1e-3),
         )
-        t, nu, vpi, values = solve_bbg_value_function(
-            config, n_nu=5, n_vpi=10, n_time=20,
-        )
+        t, nu, vpi, values = solve_bbg_value_function(config, n_nu=5, n_vpi=10, n_time=20)
         assert values.shape == (21, 5, 10)
         assert np.all(np.isfinite(values))
-        # Terminal condition: v(T) = 0
         np.testing.assert_allclose(values[-1], 0.0, atol=1e-15)
 
-    def test_gamma_zero_value_near_zero(self):
-        """At gamma=0, inventory penalty vanishes; value should be small."""
+    def test_gamma_zero_3d(self):
         config = BBGBenchmarkConfig(
             book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
-            control=BBGControlSpec(horizon=0.0012, gamma=0.0),
+            control=BBGControlSpec(gamma=0.0),
         )
-        t, nu, vpi, values = solve_bbg_value_function(
-            config, n_nu=5, n_vpi=10, n_time=20,
-        )
-        # With gamma=0, the penalty term vanishes, but Hamiltonian terms
-        # still contribute. Value should be non-negative (spread capture).
+        t, nu, vpi, values = solve_bbg_value_function(config, n_nu=5, n_vpi=10, n_time=20)
         assert np.all(np.isfinite(values))
+
+
+class TestNoGapSolver:
+    def test_single_option_no_gap_runs(self):
+        config = BBGBenchmarkConfig(
+            heston=BBGHestonSpec(kappa_p=3.0, theta_p=0.0225),
+            book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
+        )
+        t, vpi, values = solve_bbg_value_function_no_gap(config, n_vpi=20, n_time=30)
+        assert values.shape == (31, 20)
+        assert np.all(np.isfinite(values))
+        np.testing.assert_allclose(values[-1], 0.0, atol=1e-15)
+
+    def test_multi_option_no_gap_runs(self):
+        config = BBGBenchmarkConfig.no_gap_default()
+        config = BBGBenchmarkConfig(
+            heston=config.heston,
+            book=BBGOptionBookSpec(strikes=(9.0, 10.0, 11.0), maturities=(1.0,)),
+            control=config.control,
+        )
+        t, vpi, values = solve_bbg_value_function_no_gap(config, n_vpi=30, n_time=30)
+        assert values.shape == (31, 30)
+        assert np.all(np.isfinite(values))
+
+    def test_no_gap_controller_returns_finite_quotes(self):
+        config = BBGBenchmarkConfig(
+            heston=BBGHestonSpec(kappa_p=3.0, theta_p=0.0225),
+            book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
+        )
+        t, vpi, values = solve_bbg_value_function_no_gap(config, n_vpi=30, n_time=30)
+        ctrl = make_bbg_numerical_controller(config, values, t, None, vpi)
+        env = OptionBookMarketMakingEnv(config, seed=1)
+        state = env.reset()
+        action = ctrl(state)
+        assert np.all(np.isfinite(action.bid_distances))
+        assert np.all(np.isfinite(action.ask_distances))
+
+    def test_diagnostics_report(self):
+        config = BBGBenchmarkConfig(
+            heston=BBGHestonSpec(kappa_p=3.0, theta_p=0.0225),
+            book=BBGOptionBookSpec(strikes=(10.0,), maturities=(1.0,)),
+        )
+        _, _, values = solve_bbg_value_function_no_gap(config, n_vpi=20, n_time=20)
+        diag = solver_diagnostics(values)
+        assert diag["n_nonfinite"] == 0
+        assert diag["terminal_max_abs"] == pytest.approx(0.0, abs=1e-15)

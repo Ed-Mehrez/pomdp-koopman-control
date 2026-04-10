@@ -144,6 +144,16 @@ class BBGBenchmarkConfig:
         """Return the exact configuration from BBG Section 4.1."""
         return cls()
 
+    @classmethod
+    def no_gap_default(cls) -> "BBGBenchmarkConfig":
+        """Paper defaults with kappa_P = kappa_Q, theta_P = theta_Q (no drift gap)."""
+        return cls(
+            heston=BBGHestonSpec(
+                kappa_p=3.0, theta_p=0.0225,  # match Q
+                kappa_q=3.0, theta_q=0.0225,
+            ),
+        )
+
     def validate(self) -> None:
         self.heston.validate()
         for opt in self.book.options:
