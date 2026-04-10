@@ -1,0 +1,55 @@
+======================================================================
+  VALUE-GRADIENT RECOVERY: Prior-Free CQ-KRONIC + Backward Recursion
+======================================================================
+Train: 50 eps  |  Test: 30 eps
+
+--- Training ---
+  Episodes: 50, bandwidth: 0.830
+  Beta norms: t0=29.83, t1=722.90, t2=1433.85, t3=980.58, t4=2913.73
+  Train time: 0.1s
+  Global best fixed: w=0.230, s=0.015, mean_dW=72.10
+  Building permuted-null...
+
+--- Evaluation ---
+  risk_neutral_optimal: 0.0s
+  bbg_numerical: 1.7s
+  linear_inventory_skew: 0.0s
+  global_fixed_action: 0.0s
+  local_value_gradient: 1.4s
+  permuted_null: 1.5s
+
+======================================================================
+  RESULTS
+======================================================================
+
+  Strategy                                      CE   Spread Cap
+  -------------------------------------------------------------
+  risk_neutral_optimal                  100056.163       63.283
+  bbg_numerical                         100056.469       63.589
+  linear_inventory_skew                 100056.242       63.151
+  global_fixed_action                   100093.841       59.167
+  local_value_gradient                  100055.987       54.273
+  permuted_null                         100037.108       48.095
+
+  Contrast                                                    Mean       sd    P(>0)
+  ---------------------------------------------------------------------------------
+  local_value_gradient - linear_inventory_skew              -0.255   52.678  0.49807
+  local_value_gradient - bbg_numerical                      -0.482   52.674  0.49635
+  local_value_gradient - risk_neutral_optimal               -0.177   52.681  0.49866
+  local_value_gradient - global_fixed_action               -37.855   51.840  0.23263
+  local_value_gradient - permuted_null                      18.878   62.258  0.61914
+
+  Gap closure: -1.121
+    vg CE=100055.987, linear=100056.242, bbg=100056.469
+
+  Action usage (N=600):
+    mean w=0.1714, std=0.0945, range=[0.1000,0.3000]
+    mean s=0.00558, std=0.04948
+    unique w (4dp): 24
+
+  Gradient diagnostics:
+    beta[0] norm=29.8281, max=14.9141
+    beta[1] norm=722.8989, max=430.3705
+    beta[2] norm=1433.8535, max=912.2524
+    beta[3] norm=980.5834, max=504.1894
+    beta[4] norm=2913.7349, max=2401.2343

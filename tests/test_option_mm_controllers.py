@@ -28,6 +28,12 @@ from applications.option_mm.inventory_variance import (  # noqa: E402
     bergault_gueant_heston_estimator,
     empirical_sliding_window_estimator,
 )
+from applications.option_mm.local_value_bilinear import (  # noqa: E402
+    collect_episode_data,
+    compute_value_gradients,
+    make_local_value_gradient_controller,
+    train_value_gradient_controller_data,
+)
 from applications.option_mm.local_bilinear_controller import (  # noqa: E402
     LocalBilinearModel,
     collect_bilinear_training_data,
@@ -840,5 +846,67 @@ class TestLocalBilinearController:
             state, _, _, _ = env.step(action)
             states.append(state)
 
+        assert states[-1].done
+        assert np.isfinite(states[-1].wealth)
+
+
+# ---------------------------------------------------------------------------
+# Local value-gradient bilinear controller tests
+# ---------------------------------------------------------------------------
+
+
+class TestValueGradientController:
+    def _train_tiny(self):
+        utility = crra_utility(2.0)
+        eps, betas, bw = train_value_gradient_controller_data(
+            training_seeds=list(range(10)),
+            utility_u=utility.u,
+            gamma_ce=2.0,
+            initial_cash=100_000.0,
+            horizon_steps=5,
+            ridge=1e-2,
+        )
+        return eps, betas, bw
+
+    def test_produces_finite_quotes(self):
+        eps, betas, bw = self._train_tiny()
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=99)
+        state = env.reset()
+        ctrl = make_local_value_gradient_controller(
+            env, eps, betas, state, bandwidth=bw, ridge=1e-2,
+        )
+        while not state.done:
+            action = ctrl(state)
+            assert action.bid_price >= 0.0
+            assert action.ask_price >= action.bid_price
+            assert np.isfinite(action.bid_price)
+            assert np.isfinite(action.ask_price)
+            assert np.isfinite(action.hedge_trade)
+            state, _, _, _ = env.step(action)
+
+    def test_no_bbg_leakage(self):
+        import inspect
+        from applications.option_mm import local_value_bilinear as mod
+        source = inspect.getsource(mod)
+        assert "make_bbg_numerical" not in source
+        assert "BBGQuoteLookup" not in source
+        assert "bbg_solver" not in source
+
+    def test_betas_have_correct_length(self):
+        eps, betas, _ = self._train_tiny()
+        assert len(betas) == 6  # horizon_steps=5, so T+1=6
+
+    def test_runs_full_episode(self):
+        eps, betas, bw = self._train_tiny()
+        env = OptionMarketMakingEnv(horizon_steps=5, initial_cash=100_000.0, seed=42)
+        state = env.reset()
+        ctrl = make_local_value_gradient_controller(
+            env, eps, betas, state, bandwidth=bw, ridge=1e-2,
+        )
+        states = [state]
+        while not state.done:
+            action = ctrl(state)
+            state, _, _, _ = env.step(action)
+            states.append(state)
         assert states[-1].done
         assert np.isfinite(states[-1].wealth)
