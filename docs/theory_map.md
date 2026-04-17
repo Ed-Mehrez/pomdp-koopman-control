@@ -13,6 +13,32 @@ This document is not a proposal. It is a status map:
 
 The core thesis of the repo is a **belief-state control architecture for partially observed stochastic systems**: learn or estimate a low-dimensional state from observations, then control in that state. In the repo's strongest form, that state is built from **Koopman/signature observables**. In the current OMM line, however, the Heston/Bergault-Guéant stage is primarily a **validation benchmark**, not the final theory destination: the right success case is to recover a known analytic structure under partial observation, not to beat it. The more ambitious claim, still open, is that the same architecture matters once the dynamics are non-Markov, misspecified, or otherwise outside the closed-form BG regime.
 
+## 0.1 The Three-Route Theory Stack
+
+The repo is now best understood through three complementary theory routes.
+
+1. **Approach I — factor-reduced / homothetic control**
+   - exact benchmark route when scale invariance closes the problem on a latent
+     factor;
+   - detailed note: [theory_crra_eigenfunction.md](/home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/docs/theory_crra_eigenfunction.md:1)
+
+2. **Approach II — stationary transformed-state control**
+   - general representation route when raw price/wealth levels are non-ergodic
+     but a transformed path state can be made stationary;
+   - detailed note: [theory_ergodic_signatures_and_horizon_selection.md](/home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/docs/theory_ergodic_signatures_and_horizon_selection.md:1)
+
+3. **Approach III — finite-horizon local semigroup control**
+   - the long-run control route, replacing invariant-measure logic by
+     short-horizon local generator expansions around a reference controller;
+   - synthesis note: [signature_based_filtering_control.md](/home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/docs/signature_based_filtering_control.md:1)
+
+Current recommended order:
+
+- use Approach I for clean validation,
+- build reusable tooling around Approach II,
+- and treat Approach III as the fully general controller theory to complete
+  once the representation layer is stable.
+
 ## 1. Core thesis
 
 At the project level, the intended theory is:

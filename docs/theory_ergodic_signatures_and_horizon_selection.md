@@ -471,3 +471,290 @@ For $d=2$ (price + time), $K=30$ landmarks: ~120 FLOPs per step. Compare to BPF:
 5. **Bonnier, P. & Oberhauser, H.** (2020). "Signature cumulants, ordered partitions, and independence of stochastic processes." Bernoulli 26(4), 2452–2486.
 6. **Nourdin, I. & Peccati, G.** (2012). *Normal Approximations with Malliavin Calculus.* Cambridge University Press.
 7. **Jordan, R., Kinderlehrer, D. & Otto, F.** (1998). "The variational formulation of the Fokker-Planck equation." SIAM J. Math. Anal. 29(1), 1–17.
+
+---
+
+## Part VII: Approach II — Stationary Transformed-State Control for Non-Ergodic Finance Data
+
+The earlier parts of this document established the rigorous transform theory.
+This final part makes the control-theoretic point explicit.
+
+Approach II in the repo is:
+
+1. raw price/wealth levels may be non-ergodic and unsuitable for
+   invariant-measure regression;
+2. choose a transform of the observation history that is stationary or
+   approximately stationary;
+3. learn prediction and local control in that transformed state.
+
+This is the route that should scale beyond homothetic finance.
+
+### 7.1 Why Raw Heston Levels Are the Wrong Invariant-Measure Coordinates
+
+### Proposition 7.1 (Heston Splits into an Ergodic Factor and a Non-Ergodic Level)
+
+Consider the Heston system
+
+$$
+\begin{aligned}
+dX_t &= \left(\mu - \frac{1}{2}V_t\right)dt + \sqrt{V_t}\,dB_t^1, \\
+dV_t &= \kappa(\theta - V_t)dt + \xi\sqrt{V_t}\,dB_t^2,
+\qquad
+d\langle B^1, B^2\rangle_t = \rho\,dt,
+\end{aligned}
+$$
+
+where $X_t = \log S_t$.
+
+Assume $\kappa > 0$, $\theta > 0$, and the standard positivity condition
+$2\kappa\theta \ge \xi^2$.
+
+Then:
+
+1. the variance factor $V_t$ is positive recurrent and admits a unique
+   invariant Gamma law;
+2. the log-price $X_t$ has no invariant probability measure on $\mathbb{R}$;
+3. therefore the joint level process $(X_t, V_t)$ has no invariant
+   probability measure on $\mathbb{R}\times \mathbb{R}_+$.
+
+#### Proof
+
+For the CIR variance factor,
+
+$$
+dV_t = \kappa(\theta - V_t)dt + \xi\sqrt{V_t}\,dB_t^2,
+$$
+
+the drift is restoring and the diffusion coefficient is sublinear in $V$.
+Classical CIR theory gives a unique invariant Gamma distribution with mean
+$\theta$ and exponential convergence to equilibrium under the stated
+parameters.
+
+Now consider $X_t$.  By integrating the SDE,
+
+$$
+X_t - X_0
+=
+\int_0^t \left(\mu - \frac{1}{2}V_s\right)ds
++
+\int_0^t \sqrt{V_s}\,dB_s^1.
+$$
+
+The martingale term has quadratic variation
+
+$$
+\left\langle \int_0^\cdot \sqrt{V_s}\,dB_s^1 \right\rangle_t
+=
+\int_0^t V_s\,ds.
+$$
+
+Since $V_t$ is ergodic with stationary mean $\theta > 0$, the ergodic theorem
+implies
+
+$$
+\frac{1}{t}\int_0^t V_s\,ds \to \theta
+\qquad \text{a.s.}
+$$
+
+Hence the quadratic variation grows asymptotically like $\theta t$, so
+$X_t$ acquires diffusive spread of order $\sqrt{t}$.  In particular,
+$\mathrm{Var}(X_t)$ is unbounded as $t \to \infty$, which rules out tightness
+of the marginal laws of $X_t$ and therefore rules out an invariant probability
+measure on $\mathbb{R}$.
+
+If $(X_t, V_t)$ admitted an invariant law on
+$\mathbb{R}\times\mathbb{R}_+$, then its $X$-marginal would be invariant for
+$X_t$, contradicting the previous conclusion. $\square$
+
+#### Remark 7.2
+
+This proposition is the clean mathematical answer to the “is Heston ergodic?”
+question:
+
+- the latent variance factor is ergodic;
+- the raw log-price level is not;
+- the full level state is therefore not.
+
+So any invariant-measure theory applied directly to raw price or wealth levels
+is mis-specified from the outset.
+
+### 7.2 A General Stationary-Transform Principle
+
+Approach II does not ask raw levels to be ergodic.  It asks whether the
+**transformed state** can be made ergodic.
+
+### Proposition 7.3 (Exponentially Fading Transform of a Stationary-Increment Observable)
+
+Let $R_t$ be a square-integrable semimartingale with stationary increments and
+zero mean increments.  Fix $\lambda > 0$ and define
+
+$$
+Z_t := \int_{-\infty}^{t} e^{-\lambda (t-s)}\, dR_s.
+$$
+
+Then:
+
+1. $Z_t$ is strictly stationary;
+2. $Z_t$ is Markov whenever $R_t$ is an Itô process driven by white noise;
+3. $Z_t$ solves the linear stochastic evolution
+
+$$
+dZ_t = -\lambda Z_t\,dt + dR_t.
+$$
+
+#### Proof
+
+For stationarity, let $\tau_h$ denote time-shift by $h$.  Then
+
+$$
+Z_{t+h}
+=
+\int_{-\infty}^{t+h} e^{-\lambda(t+h-s)}\,dR_s.
+$$
+
+By the substitution $u=s-h$,
+
+$$
+Z_{t+h}
+=
+\int_{-\infty}^{t} e^{-\lambda(t-u)}\, dR_{u+h}.
+$$
+
+Since $R$ has stationary increments, the law of the shifted increment field
+$dR_{u+h}$ equals that of $dR_u$.  Hence the finite-dimensional distributions
+of $(Z_{t_1+h},\ldots,Z_{t_n+h})$ equal those of $(Z_{t_1},\ldots,Z_{t_n})$.
+
+To obtain the dynamics, differentiate under the integral sign:
+
+$$
+\begin{aligned}
+Z_{t+dt}
+&=
+\int_{-\infty}^{t} e^{-\lambda(t+dt-s)}\,dR_s
++
+\int_t^{t+dt} e^{-\lambda(t+dt-s)}\,dR_s \\
+&=
+(1-\lambda dt)Z_t + dR_t + o(dt),
+\end{aligned}
+$$
+
+which yields
+
+$$
+dZ_t = -\lambda Z_t\,dt + dR_t.
+$$
+
+When $dR_t$ is an Itô increment driven by white noise, this is a Markov SDE in
+$Z_t$. $\square$
+
+#### Remark 7.4
+
+Proposition 7.3 is the level-1 version of the EFM story in Parts II and V.
+The point is not that every transform is stationary.  The point is that there
+exists a mathematically controlled **family** of transforms with:
+
+- explicit memory parameter $\lambda$,
+- explicit Markov realization,
+- and explicit spectral gap $\rho = \lambda$ in the simplest case.
+
+### Corollary 7.5 (Why EFM Signatures Are the Natural Generalization)
+
+For time-augmented Brownian input, the full EFM signature process is
+stationary, Markov, and exponentially ergodic by Theorems 2.5–2.7.  Therefore
+EFM signatures are the higher-order nonlinear analogue of the linear fading
+transform in Proposition 7.3.
+
+#### Proof
+
+This is exactly the content of Theorems 2.5–2.7.  Proposition 7.3 identifies
+the level-1 coordinate as a scalar OU-type process.  The cited theorems extend
+the same stationarity/Markov picture to the tensor-valued EFM signature.
+$\square$
+
+#### Remark 7.6
+
+For general financial semimartingales, the exact theorem may require extra
+assumptions not yet proved in this repo.  But the design principle remains:
+construct a transformed state with a controlled forgetting kernel and learn the
+controller there, not on the raw non-ergodic level coordinates.
+
+### 7.3 Control Reduction on the Transformed State
+
+### Proposition 7.7 (Control on a Stationary Sufficient Transform)
+
+Let $Y_{(-\infty,t]}$ be the observation history and let
+
+$$
+S_t = \mathcal T(Y_{(-\infty,t]})
+$$
+
+be a transformed state.  Assume:
+
+1. $S_t$ is Markov;
+2. $S_t$ is stationary under the uncontrolled or reference dynamics;
+3. for every admissible future control sequence, the conditional law of future
+   rewards and future observations given the observation history depends on the
+   past only through $S_t$.
+
+Then the original partially observed control problem is equivalent to a fully
+observed control problem on $S_t$.
+
+#### Proof
+
+Assumption 3 says that $S_t$ is a sufficient statistic for control.  Therefore
+for any admissible policy and any measurable future reward functional $G$,
+
+$$
+\mathbb E\!\left[
+G \,\middle|\, Y_{(-\infty,t]}
+\right]
+=
+\mathbb E\!\left[
+G \,\middle|\, S_t
+\right].
+$$
+
+Consequently, the continuation value at time $t$ depends on the full
+observation history only through $S_t$.  Dynamic programming may therefore be
+written with state variable $S_t$ rather than the entire path history.
+Assumption 1 provides the Markov property needed for the semigroup/HJB
+formulation, while Assumption 2 provides the invariant-measure framework needed
+for stationary regression or horizon-selection arguments. $\square$
+
+#### Remark 7.8
+
+This is the precise mathematical role of Approach II:
+
+- it is **not** merely a better feature engineering trick;
+- it is the route that turns a non-ergodic observed path into a state on which
+  invariant-measure learning is legitimate.
+
+### 7.4 How Approach II Fits the Three-Route Program
+
+The three routes now used in the repo should be interpreted as follows.
+
+1. **Approach I**: exploit exact homothetic structure and reduce to an ergodic
+   latent factor whenever possible.  This is the clean Heston/CRRA benchmark.
+2. **Approach II**: when raw levels are non-ergodic, learn or construct a
+   stationary transformed state and do prediction/control there.
+3. **Approach III**: if invariant-measure theory is too rigid, move to a
+   finite-horizon local semigroup theory on the transformed or belief state.
+
+Approach II is therefore the most general **representation layer** in the
+current theory stack.
+
+### Remark 7.9 (Why Approach II Is the Best Generalization Target)
+
+Approach I is exact but structurally narrow.  Approach III is the likely
+long-run endgame but requires delicate local semigroup arguments and good local
+response estimators.  Approach II sits between them:
+
+- broad enough to apply beyond homothetic finance,
+- structured enough to exploit stationarity and spectral-gap arguments,
+- and implementable with existing EFM / recurrent-signature machinery.
+
+That is why the current recommended program is:
+
+- use Approach I as the fast benchmark,
+- build reusable tooling around Approach II,
+- and treat Approach III as the later theoretical completion of the stack.

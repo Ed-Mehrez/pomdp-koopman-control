@@ -449,3 +449,410 @@ The mathematical principle: **eigenvalue estimation must be done per-eigenfuncti
 Once you have $\lambda_i(\pi)$ for each $i$, you can combine them however you want (Ridge weights, etc.) in the **expected utility formula**. But you cannot combine first and then estimate an "effective eigenvalue" - that introduces bias from the nonlinear ratio.
 
 This is analogous to why $\mathbb{E}[X/Y] \neq \mathbb{E}[X]/\mathbb{E}[Y]$ in general.
+
+---
+
+## Part III: Approach I — Factor-Reduced Control Under Homothetic Preferences
+
+The preceding sections explain why CRRA utility naturally interacts with
+generator methods.  This section isolates the first of the three theory routes
+now guiding the repo:
+
+1. **Factor-reduced / homothetic control**: exploit scale invariance to reduce
+   the control problem to the latent factor.
+2. **Stationary transformed-state control**: transform a non-ergodic observable
+   path into a stationary lifted state and learn/control there.
+3. **Finite-horizon local semigroup control**: abandon invariant-measure
+   arguments and work directly with short-horizon controlled semigroups.
+
+Approach I is the cleanest Heston benchmark because it produces exact
+structure.  Its weakness is equally clear: it depends on homothetic
+preferences and multiplicative wealth dynamics.
+
+### 13. General Setup
+
+Let $X_t$ be a latent Markov factor taking values in a state space
+$\mathcal{X}$, and let wealth evolve as
+
+$$
+dW_t
+=
+W_t \Big(r(X_t, t) + \pi_t^\top b(X_t, t)\Big)dt
++
+W_t \,\pi_t^\top \Sigma(X_t, t)\, dB_t,
+$$
+
+where $B_t$ is Brownian motion, $\pi_t$ is an admissible control, and the
+factor dynamics are autonomous:
+
+$$
+dX_t = \beta(X_t, t)dt + \Gamma(X_t, t)d\widetilde B_t.
+$$
+
+The key structural assumption is that the wealth equation is
+**multiplicative in wealth** and the factor dynamics do **not** depend on the
+wealth level.  Consider CRRA utility
+
+$$
+U(w)=\frac{w^{1-\gamma}}{1-\gamma}, \qquad \gamma \neq 1.
+$$
+
+Define the finite-horizon value function
+
+$$
+V(t,w,x)
+:=
+\sup_{\pi \in \mathcal{A}}
+\mathbb{E}_{t,w,x}\big[U(W_T^\pi)\big].
+$$
+
+### Proposition 13.1 (Homothetic Reduction)
+
+Under the multiplicative wealth dynamics above and CRRA utility,
+
+$$
+V(t,\lambda w,x)=\lambda^{1-\gamma}V(t,w,x)
+\qquad
+\text{for every } \lambda > 0.
+$$
+
+Consequently there exists a reduced factor value function $\Phi$ such that
+
+$$
+V(t,w,x)=\frac{w^{1-\gamma}}{1-\gamma}\,\Phi(t,x).
+$$
+
+#### Proof
+
+Fix an admissible control $\pi$.  Because the wealth SDE is linear in the
+current wealth level, if $W^{\pi, w}$ denotes the wealth process started at
+$W_t = w$, then pathwise
+
+$$
+W_s^{\pi, \lambda w} = \lambda W_s^{\pi, w}
+\qquad \text{for all } s \in [t,T].
+$$
+
+Therefore
+
+$$
+U\!\left(W_T^{\pi, \lambda w}\right)
+=
+\frac{(\lambda W_T^{\pi, w})^{1-\gamma}}{1-\gamma}
+=
+\lambda^{1-\gamma} U\!\left(W_T^{\pi,w}\right).
+$$
+
+Taking conditional expectation and then the supremum over controls yields
+
+$$
+V(t,\lambda w,x)
+=
+\sup_{\pi \in \mathcal A}
+\mathbb E_{t,w,x}\!\left[
+\lambda^{1-\gamma}U(W_T^{\pi,w})
+\right]
+=
+\lambda^{1-\gamma}V(t,w,x).
+$$
+
+Set
+
+$$
+\Phi(t,x) := (1-\gamma)V(t,1,x),
+$$
+
+and the representation follows by choosing $\lambda = w$. $\square$
+
+#### Remark 13.2
+
+This is the exact mathematical reason Heston-CRRA is such a convenient
+benchmark.  The wealth scale disappears and the control problem closes on the
+latent factor.  That makes Approach I both rigorous and narrow: the whole
+reduction hinges on the homogeneity of CRRA.
+
+### Corollary 13.3 (Reduced HJB on the Latent Factor)
+
+Assume $\Phi$ is smooth enough for dynamic programming.  Then the full HJB for
+$V$ reduces to a lower-dimensional HJB for $\Phi$ on factor space:
+
+$$
+\partial_t \Phi
++
+\mathcal L^X \Phi
++
+\sup_{\pi}
+\left\{
+(1-\gamma)\Phi \,\pi^\top b
+-\frac{\gamma(1-\gamma)}{2}\Phi \,\pi^\top \Sigma \Sigma^\top \pi
++
+(1-\gamma)\,\pi^\top \Sigma \Gamma^\top \nabla_x \Phi
+\right\}
++
+(1-\gamma)r\,\Phi
+=0,
+$$
+
+with terminal condition $\Phi(T,x)=1$.
+
+Here $\mathcal L^X$ is the generator of the latent factor process $X_t$.
+
+#### Proof
+
+Write
+
+$$
+V(t,w,x)=\frac{w^{1-\gamma}}{1-\gamma}\Phi(t,x),
+$$
+
+compute the derivatives
+
+$$
+V_w = w^{-\gamma}\Phi,
+\qquad
+V_{ww} = -\gamma w^{-\gamma-1}\Phi,
+\qquad
+\nabla_x V = \frac{w^{1-\gamma}}{1-\gamma}\nabla_x \Phi,
+\qquad
+\nabla_{wx} V = w^{-\gamma}\nabla_x \Phi,
+$$
+
+and substitute into the full HJB for the controlled pair $(W_t, X_t)$.
+Every term contains a common factor $w^{1-\gamma}/(1-\gamma)$, which may be
+divided out.  The displayed reduced HJB remains. $\square$
+
+#### Remark 13.4
+
+The extra term
+
+$$
+\pi^\top \Sigma \Gamma^\top \nabla_x \Phi
+$$
+
+is the continuation-value coupling.  This is the precise place where
+intertemporal hedging demand enters.  Any controller based only on the
+instantaneous one-step wealth quadratic ignores this term and therefore cannot
+recover non-myopic demand except by accident.
+
+### 14. Specialization to Heston
+
+For the Heston portfolio problem,
+
+$$
+\begin{aligned}
+dW_t
+&=
+W_t\left[r + \pi_t(\mu-r)\right]dt
++
+W_t \pi_t \sqrt{V_t}\,dB_t^W, \\
+dV_t
+&=
+\kappa(\theta-V_t)dt + \xi \sqrt{V_t}\,dB_t^V,
+\qquad
+d\langle B^W, B^V\rangle_t = \rho\,dt.
+\end{aligned}
+$$
+
+The reduced HJB becomes
+
+$$
+\partial_t \Phi
++
+\kappa(\theta-v)\,\partial_v \Phi
++
+\frac{1}{2}\xi^2 v\,\partial_{vv}\Phi
++
+(1-\gamma)r\,\Phi
++
+\sup_\pi
+\left\{
+(1-\gamma)(\mu-r)\pi \Phi
+-\frac{\gamma(1-\gamma)}{2}\pi^2 v \Phi
++
+(1-\gamma)\rho\xi v \pi \partial_v \Phi
+\right\}
+=0.
+$$
+
+### Proposition 14.1 (Optimal Heston Control in Reduced Form)
+
+Whenever $\Phi(t,v) > 0$ and the HJB is smooth enough, the optimizer is
+
+$$
+\pi^*(t,v)
+=
+\frac{\mu-r}{\gamma v}
++
+\frac{\rho \xi}{\gamma}\,\frac{\partial_v \Phi(t,v)}{\Phi(t,v)}.
+$$
+
+The first term is the myopic Merton demand.  The second term is the
+intertemporal hedging demand.
+
+#### Proof
+
+The term to be maximized over $\pi$ is a concave quadratic:
+
+$$
+Q(\pi)
+=
+(1-\gamma)(\mu-r)\pi \Phi
+-\frac{\gamma(1-\gamma)}{2}\pi^2 v \Phi
++
+(1-\gamma)\rho\xi v \pi \partial_v \Phi.
+$$
+
+Differentiate with respect to $\pi$:
+
+$$
+Q'(\pi)
+=
+(1-\gamma)(\mu-r)\Phi
+-\gamma(1-\gamma)\pi v \Phi
++
+(1-\gamma)\rho\xi v \partial_v \Phi.
+$$
+
+Set $Q'(\pi)=0$ and divide by $(1-\gamma)\Phi$:
+
+$$
+(\mu-r) - \gamma \pi v + \rho\xi v \frac{\partial_v \Phi}{\Phi} = 0.
+$$
+
+Rearranging yields the formula.  Concavity follows because
+
+$$
+Q''(\pi) = -\gamma(1-\gamma) v \Phi < 0
+$$
+
+when $\gamma > 1$, $v>0$, and $\Phi > 0$. $\square$
+
+### Proposition 14.2 (Stationary Multiplicative Overlay)
+
+Under the stationary ansatz
+
+$$
+\Phi(v)=v^p
+$$
+
+for some constant exponent $p$, the optimal control becomes
+
+$$
+\pi^*(v)
+=
+\frac{\mu-r}{\gamma v}
++
+\frac{\rho\xi p}{\gamma v}
+=
+\pi_{\mathrm{myopic}}(v)\left(
+1+\frac{\rho\xi p}{\mu-r}
+\right).
+$$
+
+Hence the natural local control coordinate is the **relative overlay**
+
+$$
+u^*
+:=
+\frac{\pi^*(v)-\pi_{\mathrm{myopic}}(v)}{\pi_{\mathrm{myopic}}(v)}
+=
+\frac{\rho\xi p}{\mu-r},
+$$
+
+which is independent of $v$.
+
+#### Proof
+
+If $\Phi(v)=v^p$, then
+
+$$
+\frac{\partial_v \Phi(v)}{\Phi(v)}
+=
+\frac{p}{v}.
+$$
+
+Substituting this into Proposition 14.1 gives
+
+$$
+\pi^*(v)
+=
+\frac{\mu-r}{\gamma v} + \frac{\rho\xi p}{\gamma v}.
+$$
+
+Factor out $\pi_{\mathrm{myopic}}(v)=\frac{\mu-r}{\gamma v}$ to obtain the
+multiplicative representation. $\square$
+
+#### Remark 14.3
+
+This proposition is exactly why a **state-adaptive proportional overlay**
+matches the stationary Heston theory while a **frozen additive overlay** does
+not.  If the benchmark target is Proposition 14.2, then the local coordinate
+should be
+
+$$
+u_t = \frac{\pi_t - \pi_{\mathrm{ref}}(V_t)}{\pi_{\mathrm{ref}}(V_t)},
+$$
+
+not a state-independent additive $\Delta \pi$.
+
+### 15. Why Approach I Is Powerful and Why It Is Narrow
+
+### Proposition 15.1 (Failure of the Homothetic Reduction Outside CRRA-Type Symmetry)
+
+Suppose the utility function is not positively homogeneous, or suppose the
+wealth dynamics are not multiplicative in wealth.  Then in general there does
+not exist a factorization
+
+$$
+V(t,w,x) = G(w)\Phi(t,x)
+$$
+
+with $G$ depending only on wealth and $\Phi$ depending only on the latent
+factor.
+
+#### Proof
+
+The factorization in Proposition 13.1 relied on the exact scaling identity
+
+$$
+U(\lambda w) = \lambda^{1-\gamma} U(w)
+$$
+
+and the pathwise multiplicative scaling
+
+$$
+W^{\pi,\lambda w}_T = \lambda W^{\pi,w}_T.
+$$
+
+If either identity fails, then
+
+$$
+V(t,\lambda w,x)
+=
+\sup_\pi
+\mathbb E[U(W_T^{\pi,\lambda w})]
+$$
+
+cannot be reduced to a scalar multiple of $V(t,w,x)$ by the same argument.
+Hence no such separation can be guaranteed in general. $\square$
+
+#### Remark 15.2
+
+This is why Approach I should be treated as:
+
+- a **benchmark route** when homothetic structure exists,
+- not the universal architecture for the repo.
+
+It is mathematically exact and computationally attractive, but it excludes:
+
+- CARA utility,
+- wealth-dependent frictions,
+- state constraints that scale non-homogeneously,
+- and many non-finance control problems where there is no wealth homogeneity to
+  exploit.
+
+In the project’s current three-route theory:
+
+- Approach I gives the **cleanest validation benchmark**;
+- Approach II is the **general stationary-representation route**;
+- Approach III is the **general finite-horizon control route**.
