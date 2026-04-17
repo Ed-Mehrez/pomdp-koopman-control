@@ -1,0 +1,142 @@
+======================================================================
+  Formal Recovery Evaluation
+======================================================================
+  Train seeds: 100, Test seeds: 500
+  Gamma: 0.001
+
+======================================================================
+  Check 3: BBG Grid Refinement
+======================================================================
+
+  Solving HJB [medium] (grid 60x15x30)...
+    Solved in 13.1s
+
+  Solving HJB [fine] (grid 120x20x40)...
+    Solved in 39.2s
+
+  Solving HJB [finer] (grid 180x25x50)...
+    Solved in 85.1s
+
+======================================================================
+  Check 1: Fitting Simple Baselines (train split)
+======================================================================
+
+  global_width: alpha=-0.300, train CE=188009 (15.7s)
+  global_width_skew: alpha=-0.300, beta=0.500, train CE=198032 (106.1s)
+
+======================================================================
+  Training SDRE Controllers
+======================================================================
+
+  Collecting exploration data (500 episodes)...
+    15000 transitions in 3.3s
+    EV top-5: [0.69950473 0.11497411 0.09170438 0.04431655 0.02118093]
+  Building action_pca_r1...
+  Building action_pca_r3...
+  Building bilinear_2stage_r1...
+  Building bilinear_2stage_r3...
+
+======================================================================
+  Check 2: Test Evaluation (500 episodes)
+======================================================================
+  risk_neutral              CE=    104985  mean=    437416  std=  142386  (3.2s)
+  bbg_medium                CE=     89018  mean=    411784  std=  135777  (12.8s)
+  bbg_fine                  CE=     89185  mean=    412204  std=  136385  (12.6s)
+  bbg_finer                 CE=     89320  mean=    413144  std=  136629  (12.6s)
+  global_width              CE=     91351  mean=    407748  std=  121736  (3.2s)
+  global_width_skew         CE=    100643  mean=    403712  std=  114618  (3.3s)
+  action_pca_r1             CE=    106126  mean=    440289  std=  141035  (4.1s)
+  action_pca_r3             CE=    109760  mean=    432397  std=  142969  (4.2s)
+  bilinear_2stage_r1        CE=    112687  mean=    440652  std=  142201  (4.0s)
+  bilinear_2stage_r3        CE=     82644  mean=    421924  std=  142890  (4.2s)
+
+======================================================================
+  CARA CE Paired Contrasts (bootstrap, 10K resamples)
+======================================================================
+
+  Contrast                                       mean       sd     P>0                95% CrI
+  ---------------------------------------------------------------------------------------
+  action_pca_r1 - risk_neutral                   9209    15182  0.9549 [     -291,     40651]
+  action_pca_r1 - global_width                  12709    38694  0.7585 [   -52345,     71631]
+  action_pca_r1 - global_width_skew             16203    29981  0.7651 [   -44749,     62338]
+  bilinear_2stage_r3 - global_width            -15143    35698  0.2311 [   -76518,     40854]
+  bilinear_2stage_r3 - global_width_skew       -11650    25924  0.3136 [   -68231,     31561]
+  bilinear_2stage_r1 - global_width              6485    30866  0.6498 [   -46476,     58192]
+  action_pca_r1 - bbg_fine                      23570    31254  0.7651 [   -24884,     73797]
+  bilinear_2stage_r3 - bbg_fine                 -4283    27126  0.3102 [   -48366,     43297]
+  action_pca_r3 - bbg_fine                      19298    25011  0.7577 [   -21249,     69560]
+  bilinear_2stage_r1 - bbg_fine                 17346    20717  0.7350 [   -18432,     59665]
+  action_pca_r1 - bbg_medium                    27776    28605  0.7658 [   -14360,     73963]
+  action_pca_r1 - bbg_finer                     23184    31549  0.7639 [   -25848,     73661]
+  global_width - risk_neutral                   -3500    34499  0.3174 [   -69158,     53485]
+  global_width_skew - risk_neutral              -6994    24245  0.2645 [   -59866,     45890]
+  global_width_skew - bbg_fine                   7367    23369  0.6828 [   -30454,     61690]
+
+======================================================================
+  Check 3: Grid Refinement Summary
+======================================================================
+
+  Grid           BBG CE    APr1 CE   APr1-BBG    2Sr3 CE   2Sr3-BBG
+  medium          89018     106126      17107      82644      -6374
+  fine            89185     106126      16941      82644      -6541
+  finer           89320     106126      16805      82644      -6676
+
+======================================================================
+  Check 4: Interpretability
+======================================================================
+
+  action_pca_r1:
+    proj(global_width): 0.0022
+    proj(vega_skew): 0.0329
+    proj(maturity_tilt): 0.0670
+    proj(moneyness_tilt): 0.0081
+    dir 1: bid_mean=0.0328 ask_mean=-0.0476 bid_std=0.1034 ask_std=0.1897
+
+  action_pca_r3:
+    proj(global_width): 0.0796
+    proj(vega_skew): 0.0874
+    proj(maturity_tilt): 0.1397
+    proj(moneyness_tilt): 0.1327
+    dir 1: bid_mean=0.0328 ask_mean=-0.0476 bid_std=0.1034 ask_std=0.1897
+    dir 2: bid_mean=0.0408 ask_mean=0.0252 bid_std=0.1922 ask_std=0.1037
+    dir 3: bid_mean=0.0588 ask_mean=-0.0007 bid_std=0.2134 ask_std=0.0314
+
+  bilinear_2stage_r1:
+    proj(global_width): 0.0000
+    proj(vega_skew): 0.0634
+    proj(maturity_tilt): 0.0170
+    proj(moneyness_tilt): 0.0000
+    dir 1: bid_mean=0.0375 ask_mean=-0.0387 bid_std=0.0964 ask_std=0.1945
+
+  bilinear_2stage_r3:
+    proj(global_width): 0.1413
+    proj(vega_skew): 0.1337
+    proj(maturity_tilt): 0.0261
+    proj(moneyness_tilt): 0.0452
+    dir 1: bid_mean=0.0375 ask_mean=-0.0387 bid_std=0.0964 ask_std=0.1945
+    dir 2: bid_mean=-0.0161 ask_mean=0.0185 bid_std=0.1647 ask_std=0.1492
+    dir 3: bid_mean=0.0603 ask_mean=0.0584 bid_std=0.1219 ask_std=0.1676
+
+======================================================================
+  Check 5: Outcome Classification
+======================================================================
+
+  CE summary:
+    RN:               104985
+    BBG fine:         89185
+    BBG finer:        89320
+    global_width:     91351
+    global_width_skew:100643
+    ActionPCA r1:     106126
+    Bilinear2S r3:    82644
+
+  Anti-triviality (learned vs width+skew):
+    APr1 - gws: mean=16203, P>0=0.7651
+    2Sr3 - gws: mean=-11650, P>0=0.3136
+
+  Grid stability (learned vs finer BBG):
+    APr1 - bbg_finer: mean=23184, P>0=0.7639
+    2Sr3 - bbg_finer: mean=-4669, P>0=0.3088
+
+  *** OUTCOME: C ***
+  Mostly retuning: simple global width/skew baselines explain most or all of the apparent gain.

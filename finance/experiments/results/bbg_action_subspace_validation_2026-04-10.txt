@@ -1,0 +1,68 @@
+======================================================================
+  Heuristic-Subspace Alignment Validation
+======================================================================
+
+  Heuristic directions: ['global_width', 'vega_skew', 'maturity_tilt', 'moneyness_tilt']
+  Heuristic span dimension: 4
+
+Collecting exploration data...
+  15000 transitions collected
+
+======================================================================
+  Per-heuristic projection fraction
+======================================================================
+
+  Method: BilinearSVD
+   Rank    global_width       vega_skew   maturity_tilt  moneyness_tilt
+      1           0.027           0.108           0.000           0.012
+      2           0.048           0.112           0.005           0.099
+      3           0.049           0.381           0.015           0.145
+      5           0.086           0.435           0.034           0.279
+      8           0.179           0.462           0.116           0.372
+
+  Method: ActionPCA
+   Rank    global_width       vega_skew   maturity_tilt  moneyness_tilt
+      1           0.002           0.033           0.067           0.008
+      2           0.046           0.033           0.084           0.124
+      3           0.080           0.087           0.140           0.133
+      5           0.134           0.097           0.163           0.197
+      8           0.200           0.164           0.282           0.202
+
+======================================================================
+  Principal angles (degrees) between learned and heuristic spans
+======================================================================
+
+  Method: BilinearSVD
+    rank=1: [67.36596949]
+    rank=2: [62.93606692 76.29555815]
+    rank=3: [49.89150989 65.85247158 84.61550127]
+    rank=5: [47.66346338 54.51213871 78.71789959 85.94884545]
+    rank=8: [40.44138418 48.64846781 73.0719125  80.19630441]
+
+  Method: ActionPCA
+    rank=1: [70.61442784]
+    rank=2: [65.153007   70.62450282]
+    rank=3: [62.19550029 68.19551063 73.16673975]
+    rank=5: [55.77219316 66.08466826 72.88849766 81.02521156]
+    rank=8: [53.34913539 57.76686142 66.00855542 78.23535009]
+
+======================================================================
+  BBG action reconstruction quality
+======================================================================
+
+  Solving HJB for reference actions...
+  No non-censored BBG actions collected.
+
+======================================================================
+  Bilinear SVD explained variance
+======================================================================
+    Direction 1: 0.6995  (cumulative: 0.6995)
+    Direction 2: 0.1150  (cumulative: 0.8145)
+    Direction 3: 0.0917  (cumulative: 0.9062)
+    Direction 4: 0.0443  (cumulative: 0.9505)
+    Direction 5: 0.0212  (cumulative: 0.9717)
+    Direction 6: 0.0106  (cumulative: 0.9823)
+    Direction 7: 0.0074  (cumulative: 0.9897)
+    Direction 8: 0.0039  (cumulative: 0.9936)
+    Direction 9: 0.0029  (cumulative: 0.9964)
+    Direction 10: 0.0015  (cumulative: 0.9979)

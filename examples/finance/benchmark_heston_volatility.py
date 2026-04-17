@@ -5,8 +5,11 @@ import time
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
-from finance.signature_volatility import SignatureVolatilityEstimator
-from sskf.streaming_sig_kkf import LogSignatureState, StreamingSigKernelLearner, StreamingSigKKF
+try:
+    from finance.signature_volatility import SignatureVolatilityEstimator
+except ImportError:
+    SignatureVolatilityEstimator = None
+from sskf.streaming_sig_kkf import LogSignatureState
 from sskf.online_path_features import RandomProjectionNystrom
 
 def simulate_heston(T=1.0, N=10000, S0=1.0, V0=0.04, kappa=5.0, theta=0.04, sigma=0.5, rho=-0.7, mu=0.05, sigma_noise=0.0):
@@ -54,6 +57,12 @@ def bipower_variation(returns, window):
     # Pad beginning
     bv = np.concatenate([np.ones(window) * bv[0], bv])
     return bv
+
+def rolling_mean_causal(values, window):
+    """Causal rolling average aligned with the local-window estimators."""
+    kernel = np.ones(window) / window
+    out = np.convolve(values, kernel, mode='valid')
+    return np.concatenate([np.full(window - 1, out[0]), out])
 
 def lead_lag_transform(path):
     """Computes the lead-lag transform of a 1D path."""
@@ -272,36 +281,37 @@ def run_benchmark():
     spot_vol_sig = sig_qv / (window * dt)
     print(f"Done in {time.time() - t0:.2f} s")
     
-    print("Computing RBF Signature Estimator (from src.finance)...")
-    t0 = time.time()
-    # Limit data size for RBF Kernel fitting to prevent memory scaling issues
-    train_size = min(N // 2, 5000)
-    train_returns = returns[:train_size]
-    # Use BV as the target for training (Robust to Microstructure Noise)
-    train_qv = bv[:train_size]
-    
-    estimator = SignatureVolatilityEstimator(window=window, gamma=0.5, alpha=0.1)
-    
-    # Train to predict spot variance (BV) - NOTE: TARGET IS BV, NOT TRUE VOL (V_true)
-    # This ensures we aren't leaking the unobservable true state into the model
-    sigs_train = estimator._extract_signatures(train_returns)
-    targets_train = train_qv[window:window + len(sigs_train)]
-    min_len = min(len(sigs_train), len(targets_train))
-    
-    from sklearn.kernel_ridge import KernelRidge
-    estimator.train_sigs = sigs_train[:min_len]
-    estimator.model = KernelRidge(alpha=0.1, kernel='rbf', gamma=0.5)
-    estimator.model.fit(sigs_train[:min_len], targets_train[:min_len])
-    
-    # Predict on the full dataset (doing in chunks if n is large)
     spot_vol_sig_rbf = np.full(N, np.nan)
-    # We only predict on a subset to keep benchmark fast, e.g. 10000 steps
     eval_size = 10000
-    test_returns = returns[:eval_size]
-    sigs_test = estimator._extract_signatures(test_returns)
-    pred_vol = estimator.model.predict(sigs_test)
-    spot_vol_sig_rbf[window:window+len(pred_vol)] = pred_vol
-    print(f"Done in {time.time() - t0:.2f} s")
+    if SignatureVolatilityEstimator is not None:
+        print("Computing RBF Signature Estimator (from src.finance)...")
+        t0 = time.time()
+        # Limit data size for RBF Kernel fitting to prevent memory scaling issues
+        train_size = min(N // 2, 5000)
+        train_returns = returns[:train_size]
+        # Use BV as the target for training (Robust to Microstructure Noise)
+        train_qv = bv[:train_size]
+
+        estimator = SignatureVolatilityEstimator(window=window, gamma=0.5, alpha=0.1)
+
+        # Train to predict spot variance (BV) - NOTE: TARGET IS BV, NOT TRUE VOL (V_true)
+        # This ensures we aren't leaking the unobservable true state into the model
+        sigs_train = estimator._extract_signatures(train_returns)
+        targets_train = train_qv[window:window + len(sigs_train)]
+        min_len = min(len(sigs_train), len(targets_train))
+
+        from sklearn.kernel_ridge import KernelRidge
+        estimator.train_sigs = sigs_train[:min_len]
+        estimator.model = KernelRidge(alpha=0.1, kernel='rbf', gamma=0.5)
+        estimator.model.fit(sigs_train[:min_len], targets_train[:min_len])
+
+        test_returns = returns[:eval_size]
+        sigs_test = estimator._extract_signatures(test_returns)
+        pred_vol = estimator.model.predict(sigs_test)
+        spot_vol_sig_rbf[window:window+len(pred_vol)] = pred_vol
+        print(f"Done in {time.time() - t0:.2f} s")
+    else:
+        print("Skipping RBF Signature Estimator: src/finance/signature_volatility.py is not present.")
     
     print("Computing Log-Signature (BCH) Estimators...")
     t0 = time.time()
@@ -314,41 +324,49 @@ def run_benchmark():
     spot_vol_c_lsig = cumulative_logsig_kalman_filter(returns, bv, window, dt)
     print(f"Done in {time.time() - t0:.2f} s")
     
-    # Align target V
-    V_true = V[1:] # Volatility is V, we'll plot standard deviation sqrt(V) or just variance V
+    # Align latent target with the estimator horizon.
+    # RV/BV/signature windowed estimators recover average variance over the local
+    # block, so comparing against the causal rolling mean of V is the fair metric.
+    V_true = V[1:]
+    V_target = rolling_mean_causal(V_true, window)
     
     # Discard first 'window' steps for metrics
     valid_idx = slice(window, N)
     
-    mse_rv = np.mean((spot_vol_rv[valid_idx] - V_true[valid_idx])**2)
-    mse_bv = np.mean((spot_vol_bv[valid_idx] - V_true[valid_idx])**2)
-    mse_sig = np.mean((spot_vol_sig[valid_idx] - V_true[valid_idx])**2) # Sig QV maps to RV
-    mse_lsig = np.mean((spot_vol_lsig[valid_idx] - V_true[valid_idx])**2) 
+    mse_rv = np.mean((spot_vol_rv[valid_idx] - V_target[valid_idx])**2)
+    mse_bv = np.mean((spot_vol_bv[valid_idx] - V_target[valid_idx])**2)
+    mse_sig = np.mean((spot_vol_sig[valid_idx] - V_target[valid_idx])**2)
+    mse_lsig = np.mean((spot_vol_lsig[valid_idx] - V_target[valid_idx])**2)
     
     # For Cumulative Kalman Filter, compute MSE on valid evaluated segment
     valid_c_idx = ~np.isnan(spot_vol_c_lsig) & (np.arange(N) >= window) & (np.arange(N) < eval_size)
-    mse_c_lsig = np.mean((spot_vol_c_lsig[valid_c_idx] - V_true[valid_c_idx])**2) if np.sum(valid_c_idx) > 0 else np.nan
+    mse_c_lsig = np.mean((spot_vol_c_lsig[valid_c_idx] - V_target[valid_c_idx])**2) if np.sum(valid_c_idx) > 0 else np.nan
     
     # For RBF, only compute MSE where valid
     valid_rbf_idx = slice(window, eval_size)
-    mse_sig_rbf = np.mean((spot_vol_sig_rbf[valid_rbf_idx] - V_true[valid_rbf_idx])**2)
+    mse_sig_rbf = (
+        np.mean((spot_vol_sig_rbf[valid_rbf_idx] - V_target[valid_rbf_idx])**2)
+        if SignatureVolatilityEstimator is not None
+        else np.nan
+    )
     
     print("-" * 30)
-    print("MSE of Spot Volatility (Variance) Estimation:")
+    print("MSE of Window-Matched Variance Estimation:")
     print(f"Realized Variance (RV): {mse_rv:.6e}")
     print(f"Bipower Variation (BV): {mse_bv:.6e}")
     # Note: area of Lead-Lag perfectly matches QV, so MSE_sig should equal MSE_rv theoretically
     print(f"Lead-Lag Signature  : {mse_sig:.6e}")
     print(f"Log-Sig (BCH)       : {mse_lsig:.6e}")
     print(f"Cumulative Log-Sig Kalman: {mse_c_lsig:.6e}")
-    print(f"RBF SigKKF Estimator: {mse_sig_rbf:.6e}")
+    if SignatureVolatilityEstimator is not None:
+        print(f"RBF SigKKF Estimator: {mse_sig_rbf:.6e}")
     print("-" * 30)
     
     # Plotting
     plt.figure(figsize=(12, 6))
     time_axes = np.linspace(0, 1.0, N)
     eval_slice = slice(0, eval_size)
-    plt.plot(time_axes[eval_slice], V_true[eval_slice], label='True Spot Variance $V_t$', alpha=0.5, color='gray')
+    plt.plot(time_axes[eval_slice], V_target[eval_slice], label='True Window-Averaged Variance', alpha=0.5, color='gray')
     plt.plot(time_axes[eval_slice], spot_vol_rv[eval_slice], label=f'A&J Local RV', color='blue', linestyle='--')
     plt.plot(time_axes[eval_slice], spot_vol_bv[eval_slice], label=f'A&J Local BV', color='green', linestyle=':')
     plt.plot(time_axes[eval_slice], spot_vol_lsig[eval_slice], label=f'Log-Signature (BCH)', color='orange', linestyle='-.')

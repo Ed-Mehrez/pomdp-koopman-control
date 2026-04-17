@@ -153,6 +153,45 @@ class LeadLagLogSigState:
         return other
 
 
+class LogSignatureState:
+    """Backward-compatible 2D log-signature state.
+
+    Older example scripts use a lightweight 2D BCH state with the API:
+      - extend(x, y)
+      - get_levy_area()
+
+    The newer production code uses ``LeadLagLogSigState`` for cumulative
+    lead-lag features. This compatibility wrapper keeps the old examples
+    runnable without affecting the main online KKF implementation.
+    """
+
+    def __init__(self, level: int = 2, gamma: float = 1.0):
+        self.level = level
+        self.gamma = gamma
+        self.reset()
+
+    def reset(self):
+        self.l1 = np.zeros(2)
+        self.levy_area = 0.0
+
+    def extend(self, x: float, y: float) -> np.ndarray:
+        """Append a 2D increment and update the level-2 BCH state."""
+        dx = np.array([x, y], dtype=float)
+        a1 = self.gamma * self.l1
+        self.levy_area = (
+            self.gamma**2 * self.levy_area
+            + 0.5 * (a1[0] * dx[1] - a1[1] * dx[0])
+        )
+        self.l1 = a1 + dx
+        return self.get_features()
+
+    def get_levy_area(self) -> float:
+        return float(self.levy_area)
+
+    def get_features(self) -> np.ndarray:
+        return np.concatenate([self.l1, np.array([self.levy_area])])
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. RBF SIGNATURE KERNEL
 # ═══════════════════════════════════════════════════════════════════════════

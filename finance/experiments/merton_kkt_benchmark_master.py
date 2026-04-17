@@ -14,73 +14,117 @@ import sys, os
 
 # paths
 sys.path.insert(0, os.path.dirname(__file__))
-from merton_kronic_kernel_tensor import KernelMertonController, analytical_hedging_demand, HestonMertonEnv
+from merton_kronic_kernel_tensor import KernelMertonController, HestonMertonEnv
 from merton_kronic_bilinear import CQKRONICMerton
+from merton_theory import canonical_state_history, stationary_heston_crra_theory
 
-def run_master_comparison(n_paths=1000, n_mc=100, horizon=10):
+
+THEORY_DEVIATION_FLAG = 0.10
+
+def _validate_rows(rows):
+    theory = np.array([row["theory_delta"] for row in rows], dtype=float)
+    if not np.all(np.isfinite(theory)):
+        raise RuntimeError("Analytical theory produced non-finite values.")
+    if np.ptp(theory) <= 1e-6:
+        raise RuntimeError(
+            "Analytical theory column is flat/degenerate across rho; refusing to emit a benchmark plot."
+        )
+
+    bad_rows = []
+    for row in rows:
+        numeric_fields = [
+            row["myopic_pi"],
+            row["kkt_pi"],
+            row["kkt_delta"],
+            row["bilinear_pi"],
+            row["bilinear_delta"],
+            row["kkt_operator_r2"],
+            row["kkt_utility_r2"],
+            row["bilinear_operator_r2"],
+            row["bilinear_utility_r2"],
+        ]
+        if not np.all(np.isfinite(numeric_fields)):
+            bad_rows.append(row["rho"])
+    if bad_rows:
+        rho_fmt = ", ".join(f"{rho:+.1f}" for rho in bad_rows)
+        raise RuntimeError(f"Non-finite benchmark row(s) for rho={rho_fmt}.")
+
+
+def run_master_comparison(n_paths=1000, n_mc=100, horizon=10, v_test=0.04):
     rho_list = [0.0, -0.3, -0.5, -0.7, -0.9]
-    V_test = 0.04
-    
-    # Results storage: rho -> {method: pi*}
-    results = {r: {} for r in rho_list}
+    rows = []
     
     print("=" * 85)
-    print(f"MASTER BENCHMARK: KKT vs BILINEAR vs THEORY (N={n_paths}, MC={n_mc}, H={horizon})")
+    print(f"MASTER BENCHMARK AUDIT: KKT vs BILINEAR vs THEORY (N={n_paths}, MC={n_mc}, H={horizon})")
     print("=" * 85)
-    print(f"{'rho':>5s} | {'Theory':>8s} | {'KKT':>8s} | {'Bilinear':>8s} | {'Myopic':>8s}")
+    print(
+        f"{'rho':>5s} | {'Theory':>8s} | {'Myopic':>8s} | {'KKT':>8s} | "
+        f"{'dKKT':>8s} | {'Bilin':>8s} | {'dBil':>8s} | {'OpR2':>6s} | "
+        f"{'UR2':>6s} | {'BQ':>6s} | {'BU':>6s} | {'Flags':>10s}"
+    )
     print("-" * 85)
 
     for rho in rho_list:
-        # 1. Env and Analytical
-        env = HestonMertonEnv(rho=rho)
-        theory_hedge = analytical_hedging_demand(env)
-        myopic      = env.merton_optimal(V_test)
+        env = HestonMertonEnv(rho=rho, gamma=3.0)
+        theory = stationary_heston_crra_theory(env, v_test)
+        myopic = theory.myopic_pi
+        eval_history = canonical_state_history(v_test, myopic)
         
-        # 2. RUN KKT (Kernel Nystrom)
-        # We use identical seeds for fair comparison if possible
         np.random.seed(42); torch.manual_seed(42)
-        kkt_ctrl = KernelMertonController(env, horizon=horizon, n_landmarks=60)
-        # Use our best-found parameters
+        kkt_ctrl = KernelMertonController(env, horizon=horizon, mx=60)
         X0, XT, pi_a, U_T = kkt_ctrl.generate_training_data(n_paths=n_paths, n_mc=n_mc)
         kkt_ctrl.train(X0, XT, pi_a, U_T)
-        pi_kkt, _, _, _ = kkt_ctrl.find_optimal_pi([[0.0, V_test]] * 3)
+        kkt_eval = kkt_ctrl.evaluate_state(eval_history)
         
-        # 3. RUN BILINEAR (Signatures)
         np.random.seed(42); torch.manual_seed(42)
         bilinear_ctrl = CQKRONICMerton(env, depth=3, mode='transfer')
         psi_X, psi_Y, pi_b, U_Y = bilinear_ctrl.generate_training_data(n_paths=200, n_steps=20)
         bilinear_ctrl.train(psi_X, psi_Y, pi_b, U_Y)
-        # Bilinear optimal pi search
-        pi_bilinear, _, _, _ = bilinear_ctrl.find_optimal_pi([[0.0, V_test]] * 3)
-        
-        # Store (pi - myopic) to get the hedging demand delta
-        results[rho]['Theory']   = theory_hedge
-        results[rho]['KKT']      = pi_kkt - myopic
-        results[rho]['Bilinear'] = pi_bilinear - myopic
-        results[rho]['Myopic']   = 0.0
-        
-        print(f"{rho:+.1f} | {theory_hedge:+.4f} | {results[rho]['KKT']:+.4f} | {results[rho]['Bilinear']:+.4f} | {0.0:+.4f}")
+        bilinear_eval = bilinear_ctrl.evaluate_state(eval_history)
 
-        # Save partial plot
-        rhos_partial = np.array([r for r in results if 'KKT' in results[r]])
-        if len(rhos_partial) > 1:
-            plt.figure(figsize=(10, 6))
-            plt.plot(rhos_partial, [results[r]['Theory'] for r in rhos_partial], 'k-', label='Theory (Analytical)', lw=2)
-            plt.scatter(rhos_partial, [results[r]['KKT'] for r in rhos_partial], color='blue', s=80, label='KKT (Nystrom Kernel)', alpha=0.7)
-            plt.scatter(rhos_partial, [results[r]['Bilinear'] for r in rhos_partial], color='red', marker='x', s=80, label='Bilinear (Signatures)', alpha=0.7)
-            plt.title(f"Intertemporal Hedging Demand (V={V_test}) - Partial")
-            plt.legend(); plt.grid(True, alpha=0.3)
-            plt.savefig("finance/experiments/master_benchmark_plot_partial.png")
-            plt.close()
+        flags = []
+        if not bilinear_eval["concave"]:
+            flags.append("BILIN_GRID")
+        if abs(kkt_eval["pi_opt"] - theory.optimal_pi) > THEORY_DEVIATION_FLAG:
+            flags.append("KKT_FAR")
+        if abs(bilinear_eval["pi_opt"] - theory.optimal_pi) > THEORY_DEVIATION_FLAG:
+            flags.append("BILIN_FAR")
+        flag_text = ",".join(flags) if flags else "OK"
 
-    # Plotting
-    rhos = np.array(rho_list)
+        row = {
+            "rho": rho,
+            "theory_delta": theory.hedging_demand,
+            "myopic_pi": myopic,
+            "theory_pi": theory.optimal_pi,
+            "kkt_pi": kkt_eval["pi_opt"],
+            "kkt_delta": kkt_eval["pi_opt"] - myopic,
+            "bilinear_pi": bilinear_eval["pi_opt"],
+            "bilinear_delta": bilinear_eval["pi_opt"] - myopic,
+            "kkt_operator_r2": kkt_ctrl.operator_r2,
+            "kkt_utility_r2": kkt_ctrl.utility_r2,
+            "bilinear_operator_r2": bilinear_ctrl.koopman_fit_r2,
+            "bilinear_utility_r2": bilinear_ctrl.utility_fit_r2,
+            "flags": flag_text,
+        }
+        rows.append(row)
+
+        print(
+            f"{rho:+.1f} | {row['theory_delta']:+.4f} | {row['myopic_pi']:+.4f} | "
+            f"{row['kkt_pi']:+.4f} | {row['kkt_delta']:+.4f} | {row['bilinear_pi']:+.4f} | "
+            f"{row['bilinear_delta']:+.4f} | {row['kkt_operator_r2']:.4f} | "
+            f"{row['kkt_utility_r2']:.4f} | {row['bilinear_operator_r2']:.4f} | "
+            f"{row['bilinear_utility_r2']:.4f} | {row['flags']}"
+        )
+
+    _validate_rows(rows)
+
+    rhos = np.array([row["rho"] for row in rows], dtype=float)
     plt.figure(figsize=(10, 6))
-    plt.plot(rhos, [results[r]['Theory'] for r in rho_list], 'k-', label='Theory (Analytical)', lw=2)
-    plt.scatter(rhos, [results[r]['KKT'] for r in rho_list], color='blue', s=80, label='KKT (Nystrom Kernel)', alpha=0.7)
-    plt.scatter(rhos, [results[r]['Bilinear'] for r in rho_list], color='red', marker='x', s=80, label='Bilinear (Signatures)', alpha=0.7)
+    plt.plot(rhos, [row["theory_delta"] for row in rows], 'k-', label='Theory (Analytical)', lw=2)
+    plt.scatter(rhos, [row["kkt_delta"] for row in rows], color='blue', s=80, label='KKT (Nystrom Kernel)', alpha=0.7)
+    plt.scatter(rhos, [row["bilinear_delta"] for row in rows], color='red', marker='x', s=80, label='Bilinear (Signatures)', alpha=0.7)
     
-    plt.title(f"Intertemporal Hedging Demand Comparison (V={V_test})")
+    plt.title(f"Intertemporal Hedging Demand Comparison (V={v_test})")
     plt.xlabel("Correlation (rho)")
     plt.ylabel("Hedging Demand Delta (pi* - pi_myopic)")
     plt.legend()

@@ -1,0 +1,11 @@
+======================================================================
+  Level-2 Uncertainty: Encoder + Bayesian KRR Head
+======================================================================
+  Mode: smoke
+  Train: 500 eps
+  In-split eval: seeds 2000-2399 (50 eps)
+  Hard eval:     seeds 4000-4399 (50 eps)
+  Encoders: compact
+  Diagnostics: off
+
+Solving HJB...

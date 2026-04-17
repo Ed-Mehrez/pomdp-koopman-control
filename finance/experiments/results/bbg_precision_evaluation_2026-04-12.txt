@@ -1,0 +1,89 @@
+========================================================================
+  Precision Evaluation: Best Kernelized Controller
+========================================================================
+  Controller: ActionPCA r3, compact, alpha=3e-03, ls=2.0
+  Train: 500 eps
+  N_test levels: [2000, 3000, 4000]
+  Inference: delta method (headline) + bootstrap (cross-check)
+
+Solving HJB...
+  Solved in 49.5s
+
+Building ActionPCA r3 basis...
+  U_r (40, 3) in 16.2s
+
+Building best exact kernelized controller (alpha=3e-03, ls=2.0, compact)...
+  Built in 17.6s
+
+Calibrating ROPE from 500-ep pilot...
+  h = 7348, s_max = 7348  (pilot BBG-RN gap = 18370, 20.7s)
+
+Evaluating BBG on full pool (4000 eps)...
+  BBG done in 128.2s
+Evaluating candidate on full pool (4000 eps)...
+  Candidate done in 53.8s
+Evaluating RN on full pool (4000 eps)...
+  RN done in 33.2s
+Evaluating anti-triviality baselines...
+  GWS done in 35.0s
+
+========================================================================
+  Results by N_test
+========================================================================
+
+  --- N_test = 2000 ---
+  BBG  CE = 81666
+  Kern CE = 81625
+  RN   CE = 74430
+  GWS  CE = 50974
+
+  Delta method (headline):
+    mean=-41.4  sd=1405.0  P(ROPE)=1.0000  GA=PASS  GB=PASS  95% CrI=[-2795, 2712]
+  Bootstrap cross-check (50K draws):
+    mean=-79.7  sd=1719.1  P(ROPE)=1.0000  GA=PASS  GB=PASS  95% CrI=[-3641, 3276]
+  Delta-bootstrap agreement: sd_post relative diff = 0.2236
+  vs GWS: mean=+30651  sd=1406  P(+)=1.0000
+
+  --- N_test = 3000 ---
+  BBG  CE = 70858
+  Kern CE = 54256
+  RN   CE = 74835
+  GWS  CE = 51379
+
+  Delta method (headline):
+    mean=-16602.3  sd=1414.4  P(ROPE)=0.0000  GA=FAIL  GB=PASS  95% CrI=[-19375, -13830]
+  Bootstrap cross-check (50K draws):
+    mean=-16602.1  sd=1801.6  P(ROPE)=0.0000  GA=FAIL  GB=PASS  95% CrI=[-20260, -12982]
+  Delta-bootstrap agreement: sd_post relative diff = 0.2737
+  vs GWS: mean=+2877  sd=1414  P(+)=0.9790
+
+  --- N_test = 4000 ---
+  BBG  CE = 71146
+  Kern CE = 54544
+  RN   CE = 75123
+  GWS  CE = 51667
+
+  Delta method (headline):
+    mean=-16602.3  sd=1414.4  P(ROPE)=0.0000  GA=FAIL  GB=PASS  95% CrI=[-19374, -13830]
+  Bootstrap cross-check (50K draws):
+    mean=-16607.5  sd=1810.2  P(ROPE)=0.0000  GA=FAIL  GB=PASS  95% CrI=[-20277, -12996]
+  Delta-bootstrap agreement: sd_post relative diff = 0.2799
+  vs GWS: mean=+2877  sd=1414  P(+)=0.9790
+
+========================================================================
+  Summary
+========================================================================
+
+  Final result at N_test = 4000:
+    mean gap = -16602.3
+    sd_post  = 1414.4
+    P(ROPE)  = 0.0000
+    Gate A   = FAIL
+    Gate B   = PASS
+
+  Outcome: E2 — precision improved but gate still fails.
+
+  Scaling analysis (sd_post vs N):
+    N=2000: sd_post=1405.0  (extrapolated to N=2000: 1405.0)
+    N=3000: sd_post=1414.4  (extrapolated to N=2000: 1732.3)
+    N=4000: sd_post=1414.4  (extrapolated to N=2000: 2000.2)

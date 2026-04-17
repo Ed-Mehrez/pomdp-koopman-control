@@ -4,12 +4,10 @@ import time
 import sys
 import os
 import torch
-import torch.optim as optim
 
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 from sskf.online_path_features import RandomProjectionNystrom
-from sskf.streaming_sig_kkf import LogSignatureState
 
 class HestonPortfolioEnv:
     """
@@ -19,7 +17,9 @@ class HestonPortfolioEnv:
     Agents must dynamically choose a portfolio fraction pi_t to maximize Expected
     CRRA Utility of terminal wealth U(W_T) = (W_T^(1-gamma)) / (1-gamma).
     """
-    def __init__(self, T=1.0, N=100000, r=0.02, mu=0.08, kappa=5.0, theta=0.04, sigma=0.5, rho=-0.7, V0=0.04, W0=1.0, gamma_risk=2.0, sigma_noise=0.005):
+    def __init__(self, T=1.0, N=100000, r=0.02, mu=0.08, kappa=5.0, theta=0.04,
+                 sigma=0.5, rho=-0.7, V0=0.04, W0=1.0, gamma_risk=2.0,
+                 sigma_noise=0.005, seed=42):
         self.T = T
         self.N = N
         self.dt = T / N
@@ -33,6 +33,7 @@ class HestonPortfolioEnv:
         self.V0 = V0
         self.W0 = W0
         self.gamma_risk = gamma_risk # Coefficient of Relative Risk Aversion
+        self.seed = seed
         
         # Microstructure noise standard deviation
         self.sigma_noise = sigma_noise
@@ -42,15 +43,15 @@ class HestonPortfolioEnv:
 
     def _simulate_market(self):
         """Pre-simulates the exact market paths."""
-        np.random.seed(42)  # For reproducible benchmarking
+        rng = np.random.default_rng(self.seed)
         
         self.S_true = np.zeros(self.N + 1)
         self.V_true = np.zeros(self.N + 1)
         self.S_true[0] = 1.0
         self.V_true[0] = self.V0
         
-        Z1 = np.random.randn(self.N)
-        Z2 = np.random.randn(self.N)
+        Z1 = rng.standard_normal(self.N)
+        Z2 = rng.standard_normal(self.N)
         W_S = np.sqrt(self.dt) * Z1
         W_V = np.sqrt(self.dt) * (self.rho * Z1 + np.sqrt(1 - self.rho**2) * Z2)
         
@@ -61,7 +62,7 @@ class HestonPortfolioEnv:
             
         self.log_prices_true = np.log(self.S_true)
         # Add bid-ask microstructure noise
-        noise = np.random.normal(0, self.sigma_noise, self.N + 1)
+        noise = rng.normal(0, self.sigma_noise, self.N + 1)
         self.log_prices_observed = self.log_prices_true + noise
         
         self.returns_observed = np.diff(self.log_prices_observed)
@@ -259,6 +260,7 @@ class TrueHedgingKoopmanPolicy(KoopmanSignaturePolicy):
         self.cov_ewma = np.zeros(n_landmarks) # Covariance between dR and dPhi
         self.cov_alpha = 0.01 # EWMA decay
         self.last_phi = np.zeros(n_landmarks)
+        self.principal_eigenvalue = np.nan
         
     def reset_learning_state(self, preserve_weights=True):
         super().reset_learning_state()
@@ -278,6 +280,11 @@ class TrueHedgingKoopmanPolicy(KoopmanSignaturePolicy):
         Calculates the Optimal Koopman Value Function Weights by solving the 
         Continuous Intertemporal HJB Residual globally over the Nystrom basis.
         """
+        if len(self.phi_history) == 0:
+            print("No HJB state history collected; falling back to robust myopic policy.")
+            self.is_trained = False
+            return
+
         # Convert tracked state histories to tensors
         phi_mat = torch.tensor(np.array(self.phi_history), dtype=torch.float32)
         dphi_mat = torch.tensor(np.array(self.dphi_history), dtype=torch.float32) / self.dt
@@ -333,7 +340,7 @@ class TrueHedgingKoopmanPolicy(KoopmanSignaturePolicy):
         # 3. Solve Generalized Eigenvalue Problem via Normal Equations
         # (Phi^T M_total) w = lambda (Phi^T Phi) w
         A_mat = Phi_np.T @ M_total
-        B_mat = Phi_np.T @ Phi_np
+        B_mat = Phi_np.T @ Phi_np + lam_gedmd * np.eye(R_dim)
         
         eigvals, eigvecs = la.eig(A_mat, B_mat)
         
@@ -357,9 +364,19 @@ class TrueHedgingKoopmanPolicy(KoopmanSignaturePolicy):
         
         print(f"Koopman Policy Iteration GEP completed.")
         print(f"Discovered Principal Eigenvalue (Growth Rate): {lambda_val:.4f}")
-        
+
+        f_train = Phi_np @ w_norm
+        unstable_spectrum = (not np.isfinite(lambda_val)) or (abs(lambda_val) > 1e3)
+        nonpositive_projection = np.percentile(f_train, 5) <= 1e-8
+        if unstable_spectrum or nonpositive_projection:
+            print("HJB eigenfunction failed sanity checks; falling back to robust myopic policy.")
+            self.principal_eigenvalue = lambda_val
+            self.is_trained = False
+            return
+
         self.w_value = w_norm
         self.L_generator_np = L_np
+        self.principal_eigenvalue = lambda_val
         self.is_trained = True
         
     def __call__(self, i, env):
@@ -493,6 +510,10 @@ if __name__ == "__main__":
         hedge_controller.extractor.landmarks = state_dict['landmarks']
         hedge_controller.A = state_dict['A']
         hedge_controller.P = state_dict['P']
+        hedge_controller.principal_eigenvalue = state_dict.get('principal_eigenvalue', np.nan)
+        if not np.isfinite(hedge_controller.principal_eigenvalue) or abs(hedge_controller.principal_eigenvalue) > 1e3:
+            print("Checkpoint HJB spectrum failed sanity checks; reverting to robust myopic policy.")
+            hedge_controller.is_trained = False
     else:
         hedge_controller = TrueHedgingKoopmanPolicy(window=1000, n_landmarks=100, dt=env.dt)
         # Needs to see the whole state space geometry first
@@ -507,17 +528,16 @@ if __name__ == "__main__":
             'is_trained': hedge_controller.is_trained,
             'landmarks': hedge_controller.extractor.landmarks,
             'A': hedge_controller.A,
-            'P': hedge_controller.P
+            'P': hedge_controller.P,
+            'principal_eigenvalue': hedge_controller.principal_eigenvalue
         }
         with open(checkpoint_file, "wb") as f:
             pickle.dump(state_dict, f)
         print(f"Saved trained controller weights to {checkpoint_file}")
         
-    # Clear histories from RAM before final eval
-    hedge_controller.phi_history = []
-    hedge_controller.dphi_history = []
-    hedge_controller.cov_history = []
-    hedge_controller.v_history = []
+    # Start the final evaluation from a fresh online state while preserving the
+    # learned Koopman/HJB weights.
+    hedge_controller.reset_learning_state(preserve_weights=True)
     
     W_hedge, alloc_hedge, u_hedge = env.evaluate_policy(hedge_controller, name="Koopman True Hedging")
     

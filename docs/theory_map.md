@@ -1,6 +1,6 @@
 # Theory Map
 
-Current theory map for the repo as it actually stands on 2026-04-09.
+Current theory map for the repo as it actually stands on 2026-04-10.
 
 This document is not a proposal. It is a status map:
 
@@ -290,87 +290,208 @@ flowchart TD
     C3 --> F3[Where the methodology should actually differentiate]
 ```
 
-## 10. Salvage-plan restructuring (2026-04-10)
+## 10. Current framework-level update (2026-04-10)
 
-The project is now organized into three tracks:
+The project is still organized around three layers, but the OMM thread is now
+much sharper than it was even a day ago.
 
-### Track A — Clean benchmark lane
-Heston OMM as a scientifically honest calibration environment.
-`risk_neutral_optimal`, `bbg_numerical`, `linear_inventory_skew`, heuristic anchors.
-If `bbg_numerical ~ risk_neutral_optimal` at low gamma, that is calibration success, not failure.
+### Layer 1 — trusted benchmark and accounting
 
-### Track B — Hybrid prior + residual control (MAIN contribution)
+This layer is now stronger than before:
 
-Architecture: `u(s_t) = u_prior(s_t) + Δu(s_t)` where the prior is BBG
-numerical and the residual is a low-dimensional learned correction on
-(Δwidth, Δskew) conditioned on state-action pairs.
+- the current single-option OMM env remains the stylized sandbox,
+- the new `option_mm_bbg` package is a **real benchmark track**,
+- the full 3D BBG solver is stable on the paper-default 20-option book,
+- censoring is localized and documented,
+- the benchmark is now good enough to use as the reference point for recovery experiments.
 
-**Progression:**
+That matters because the controller story is now anchored to something cleaner
+than the old heuristic A-S extensions.
 
-1. Pure local kernel controller (`local_kernel_controller.py`): honest null.
-   Trails BBG by ~22 CE at daily Heston. Per-step spread capture SNR ~0.07.
-   This showed pure nonparametric is too data-hungry when the prior is strong.
+### Layer 2 — what the OMM benchmark now says
 
-2. Hybrid BBG + residual (`hybrid_residual_controller.py`): **first positive**.
-   Beats BBG on all 3 held-out Heston parameter cells in pilot:
-   - kappa=2.0, xi=0.5, rho=-0.7: +49 CE, P(>0)=0.974
-   - kappa=2.25, xi=0.4, rho=-0.6: +35 CE, P(>0)=0.924
-   - kappa=1.75, xi=0.6, rho=-0.8: +67 CE, P(>0)=0.979
+The benchmark-level interpretation is:
 
-   Residual learns tighter quoting (spread capture 52 vs 49 for BBG) that
-   transfers across held-out regimes. The question changed from "can a
-   nonparametric controller replace the model?" to "can a learned residual
-   improve a strong model-based prior?" — much better question, and the
-   pilot says yes.
+1. **Raw wealth and spread capture are not the right criterion** for BBG vs risk-neutral.
+   BBG is a risk-averse controller, so lower spread capture can be the correct
+   behavior if risk is reduced enough.
 
-**Architecture diagram:**
+2. **The BBG-objective consistency check is mixed but informative**:
+   - under raw wealth/spread capture, risk-neutral is better,
+   - under the small-risk mean-variance surrogate, BBG wins clearly,
+   - under bootstrap CARA certainty equivalent, the comparison is still noisy / inconclusive.
+
+So the benchmark is scientifically usable, but one should not overstate the
+economic verdict yet. The right current statement is:
+
+> the BBG benchmark is numerically stable and economically coherent enough to
+> serve as the reference controller, but the exact benchmark-consistent
+> performance ranking under finite-sample CARA evaluation is still a live issue.
+
+### Layer 3 — the framework-level positive
+
+The most important new result is **not** “we beat BBG.” The important result is:
+
+> the high-dimensional option-book action space appears to have a learnable
+> low-rank control geometry, and local bilinear / local-quadratic methods can
+> exploit that geometry.
+
+That is the part that looks generalizable beyond OMM.
+
+#### What failed
+
+- Pure local kernel control from scratch was too data-hungry.
+- The `sigma_sq_inv -> fixed skew law` channel was negative under the tested
+  Heston regimes.
+- Plain bilinear SVD on action-response channels was not enough: it found
+  dynamics-relevant directions that were poorly aligned with the control
+  objective.
+
+#### What survived
+
+- A **two-stage bilinear reduction** works much better:
+  1. learn a dynamics-relevant action overspace,
+  2. compress it again using objective curvature,
+  3. solve the local quadratic problem in the reduced coordinates.
+
+- A simpler **ActionPCA / Hessian-eigenbasis** route is also competitive.
+
+This is a valuable framework result because it identifies the important
+principle:
+
+> dynamics-rich action directions are not automatically value-rich action
+> directions; objective-aware compression matters.
+
+### Current theory claim that is defensible
+
+The defensible theory claim today is:
+
+1. In high-dimensional stochastic control, the effective action space can be
+   much lower-dimensional than the raw action coordinates.
+2. That low-dimensional structure can be learned from controlled data.
+3. A bilinear local-operator view is a good way to discover a dynamics-relevant
+   action overspace.
+4. That overspace must then be compressed again with respect to the control
+   objective.
+5. Local quadratic / SDRE-style control in the learned reduced coordinates can
+   produce competitive controllers.
+
+This is much more general than the OMM application itself.
+
+### What is now established in OMM
+
+The OMM line is now much more specific than it was earlier in the project:
+
+1. the anti-triviality baselines were run,
+2. the BBG benchmark was grid-checked,
+3. the initial “no gate pass” result was traced to an unstable bespoke
+   bootstrap for CARA CE,
+4. with the corrected paired CE posterior, the kernelized `ActionPCA r3`
+   controller **formally recovers BBG on the pre-registered split**, and
+5. that recovery is narrow: it depends on the kernelized `ActionPCA r3` route,
+   not the whole controller family.
+
+So the right current characterization is:
+
+- **in-benchmark recovery is established**
+- **broad robustness is not**
+
+### What is still provisional
+
+The remaining uncertainty is no longer “can we recover BBG at all?”
+The remaining uncertainty is:
+
+1. **generalization beyond the standard test slice**
+   - the recovered controller is fragile on harder seeds (`4000+`)
+
+2. **which ingredient fixes that fragility**
+   - state representation
+   - regularization / smoother coefficient map
+   - local objective / Hamiltonian approximation
+
+3. **how broad the controller family result really is**
+   - at present, `kernelized ActionPCA r3` works
+   - bilinear two-stage recovery does not
+   - richer hand-built summaries (`compact` vs `rich`) do not materially matter
+
+So the next phase should not chase more in-split CE. It should target
+**out-of-split robustness**.
+
+### Why this is promising for the general bilinear SDRE framework
+
+The important generalization is not “OMM is solved.” It is:
+
+- the **action reduction is learned**, not hand-engineered,
+- the reduced action coordinates are compatible with the repo’s bilinear/KRONIC
+  line,
+- the SDRE/local-quadratic solve happens in the learned coordinates,
+- heuristic control directions can be used for **post hoc validation** without
+  contaminating training.
+
+That architecture should transfer better than any OMM-specific quoting rule.
+
+```mermaid
+flowchart LR
+    A[High-dimensional action u] --> B[Controlled data]
+    B --> C[Learn bilinear action-response overspace]
+    C --> D[Objective-aware compression]
+    D --> E[Reduced coordinates a]
+    E --> F[Local quadratic / SDRE solve]
+    F --> G[Full action reconstruction]
+    G --> H[Control performance + heuristic alignment diagnostics]
 ```
-Observed path → Belief/filtered state → Analytic prior u_0 (BBG)
-                                      → Residual model Δu (KRR)
-                    u_0 + Δu → Final quotes/hedge → Wealth/fills
-```
 
-**Next:** formal run to power the held-out contrast; then Step 2 (signature
-kernel) only if RBF residual leaves value on the table.
+### What the heuristic comparison is for
 
-### Track C — One exact-recovery benchmark rebuilt cleanly
-Restore confidence in the framework core. One of: Merton exact recovery or
-a small LQG/POMDP benchmark, with reproducible script, tests, clean writeup.
+The heuristic dictionary is not part of the controller. Its role is diagnostic:
 
-### Three-layer picture
+- if the learned low-rank subspace aligns strongly with width / skew / maturity
+  / moneyness directions, that is a good validation story,
+- if it does not, the result can still be good, but it is less interpretable.
+
+The correct object of comparison is usually the **subspace**, not a raw basis
+vector, because learned bases are identifiable only up to rotation and sign.
+
+### Three-layer picture (updated)
 
 ```mermaid
 flowchart TD
     A[Layer 1: Trusted Core] --> A1[Env + accounting]
     A --> A2[Bayesian paired evaluation]
     A --> A3[Belief/filter interfaces]
-    A --> A4[Path-feature machinery]
+    A --> A4[BBG benchmark solver]
 
     B[Layer 2: Calibration Benchmarks] --> B1[Merton exact recovery]
-    B --> B2[Heston OMM: BBG numerical vs risk-neutral]
+    B --> B2[BBG numerical vs risk-neutral]
 
-    C[Layer 3: Main Research Claim] --> C1[Model-free local control on belief/path features]
-    C --> C2[Compare against analytic benchmarks where available]
-    C --> C3[Move to misspecified or richer regimes]
+    C[Layer 3: Main Framework Claim] --> C1[Learn low-rank action geometry from data]
+    C --> C2[Objective-aware compression]
+    C --> C3[Local quadratic / SDRE control in reduced coordinates]
+    C --> C4[Validate against benchmark and heuristic subspaces]
 ```
 
-### Frozen items (do not expand)
-- sigma_sq_inv estimation channel (negative under Heston; see `docs/note_sigma_sq_inv_channel_negative.md`)
-- Legacy A-S result path, filter ablation path
-- Generic “SDRE works across envs” claim
-- Framework-first abstractions (`src/control/`, controller registry)
+### Frozen / deprecated stories
+
+These are no longer the live methodological story:
+
+- `sigma_sq_inv` estimation as the route to OMM gains
+- pure local-kernel control from scratch in this daily Heston regime
+- the earlier hybrid-residual pilot as a headline positive
+- generic “SDRE works everywhere” language
+- framework-first abstractions (`src/control/`, controller registries)
 
 ## 11. Bottom line
 
-1. The project's real thesis is **belief-state control via Koopman/signature structure**.
-2. Filter quality is not the main bottleneck in daily Heston OMM — **controller structure matters more**.
-3. The old `sigma_sq_inv -> skew` channel is dead: better estimation of a single scalar plugged into a fixed skew law does not help.
-4. Pure nonparametric control from scratch is too data-hungry here — honest null, sample-efficiency result.
-5. **The hybrid prior + residual is the first genuine positive**: a low-dimensional learned correction improves a strong model-based prior, and the gain transfers to held-out parameter cells.
-6. The question changed from "can nonparametric control replace the model?" to **"can a learned residual improve a strong prior?"** — and the pilot says yes.
-7. Next: formal run, then signatures only if the RBF residual leaves value on the table.
+1. The repo now has a **credible BBG benchmark layer** for OMM.
+2. The strongest current methodological result is **low-rank action geometry**, not a final benchmark-beating headline.
+3. The promising framework idea is:
+   - learn a dynamics-relevant action overspace from data,
+   - compress it with respect to the control objective,
+   - solve locally in the reduced coordinates.
+4. That idea is much more likely to generalize than any specific OMM quote rule.
+5. The next OMM work should therefore focus on **anti-triviality and robustness checks**, not on expanding the method family prematurely.
 
-## 11. Pointers
+## 12. Pointers
 
 - OMM plan: [plan_omm_research.md](/home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/docs/plan_omm_research.md)
 - Stage 4 v2 derivation: [derivation_omm_sdre_v2.md](/home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/docs/derivation_omm_sdre_v2.md)

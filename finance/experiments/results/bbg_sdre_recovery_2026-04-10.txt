@@ -1,0 +1,119 @@
+======================================================================
+  BBG SDRE Recovery Experiment
+======================================================================
+  Options: 20
+  Gamma: 0.001
+  Horizon: 0.0012
+
+Solving 3D HJB for benchmark...
+  HJB solved in 69.8s
+
+Training SDRE bilinear (rank=3, 500 explore episodes)...
+  Trained in 6.0s
+  Singular values (top 8): [4.65881034e+11 1.88877285e+11 1.68684327e+11]
+  Explained variance (top 8): [0.69950473 0.11497411 0.09170438 0.04431655 0.02118093 0.01057154
+ 0.00740728 0.00391721]
+  Cumulative EV at rank 3: 0.9062
+
+Training SDRE action_pca (rank=3)...
+  Trained in 6.1s
+
+Training SDRE bilinear_2stage (rank=3, overspace=10)...
+  Trained in 6.2s
+
+Evaluating 200 episodes per controller...
+
+  Risk-neutral (2.4s):
+    wealth: mean=445621, std=147017
+    spread: mean=447603
+    |vega|: mean=4700878
+    CARA CE: 116570
+    mean-var: -10361431
+
+  BBG numerical (8.9s):
+    wealth: mean=406874, std=131653
+    spread: mean=410367
+    |vega|: mean=3396592
+    CARA CE: 78985
+    mean-var: -8259437
+
+  SDRE bilinear (r=3) (2.8s):
+    wealth: mean=359375, std=123218
+    spread: mean=359813
+    |vega|: mean=4570061
+    CARA CE: 76288
+    mean-var: -7231958
+
+  SDRE action_pca (r=3) (2.9s):
+    wealth: mean=432958, std=152466
+    spread: mean=434197
+    |vega|: mean=4713886
+    CARA CE: 149970
+    mean-var: -11190038
+
+  SDRE bilinear_2stage (r=3) (3.1s):
+    wealth: mean=418408, std=147924
+    spread: mean=417374
+    |vega|: mean=4638033
+    CARA CE: 153739
+    mean-var: -10522301
+
+======================================================================
+  Paired CARA CE comparisons (gamma=0.001)
+======================================================================
+
+  BBG - RN:
+    CE diff mean = -39159
+    sd_post = 39599
+    P(>0) = 0.2366
+    95% CrI = [-99714, 37662]
+
+  Bilinear - RN:
+    CE diff mean = -49519
+    sd_post = 34545
+    P(>0) = 0.0325
+    95% CrI = [-102418, 26510]
+
+  Bilinear - BBG:
+    CE diff mean = -10360
+    sd_post = 33042
+    P(>0) = 0.2483
+    95% CrI = [-77945, 64095]
+
+  ActionPCA - RN:
+    CE diff mean = 16366
+    sd_post = 30353
+    P(>0) = 0.6678
+    95% CrI = [-28721, 61733]
+
+  ActionPCA - BBG:
+    CE diff mean = 55525
+    sd_post = 28688
+    P(>0) = 0.9610
+    95% CrI = [-4944, 99363]
+
+  2Stage - RN:
+    CE diff mean = 17232
+    sd_post = 29162
+    P(>0) = 0.6369
+    95% CrI = [-23029, 49864]
+
+  2Stage - BBG:
+    CE diff mean = 56391
+    sd_post = 27412
+    P(>0) = 0.9642
+    95% CrI = [-1187, 87452]
+
+  2Stage - Bilinear:
+    CE diff mean = 66751
+    sd_post = 19298
+    P(>0) = 0.9946
+    95% CrI = [10794, 90147]
+
+  === CE Summary ===
+  Controller                        CE     Mean W      Std W
+  Risk-neutral                  116570     445621     147017
+  BBG numerical                  78985     406874     131653
+  Bilinear                       76288     359375     123218
+  ActionPCA                     149970     432958     152466
+  Bilinear 2-stage              153739     418408     147924

@@ -1,0 +1,48 @@
+======================================================================
+  Level-2 Uncertainty: Encoder + Bayesian KRR Head
+======================================================================
+  Mode: dev
+  Train: 500 eps
+  In-split eval: seeds 2000-2099 (100 eps)
+  Hard eval:     seeds 4000-4099 (100 eps)
+  Encoders: compact, deepsets
+  Diagnostics: off
+
+Solving HJB...
+  Solved in 40.3s and cached to hjb_paper_default_nnu20_nvpi40_ntime120.npz
+
+  ROPE: h=7348, s_max=7348 (pilot gap=18370)
+
+Building ActionPCA r3 basis...
+  Done in 13.4s and cached to actionpca_r3_bbg_basis_500eps.npz
+  Basis shape=(40, 3)
+
+Collecting and caching BBG training demonstrations...
+  Cached in 14.5s to train_demos_bbg_basis_bec3745ba8_n500.npz
+
+Evaluating BBG and RN references...
+  BBG CE  in-split=87575  hard=127814
+  RN CE   in-split=180059  hard=110469
+
+Building Level-2 controller: compact...
+  compact: 1.0s, n_train=3000
+
+Building Level-2 controller: deepsets...
+  deepsets: 51.8s, n_train=3000
+    DeepSets train R²=0.9692, final_loss=0.000675
+
+======================================================================
+  Part 1: CE Evaluation
+======================================================================
+
+  Controller                 in-split CE      gap      hard CE      gap
+  ----------------------------------------------------------------------
+  BBG                              87575      ---       127814      ---
+  compact                         211499  +123924       110453   -17361
+    in-split gate: mean=+123924 sd=1421 P(ROPE)=0.000 GA=F GB=P
+    hard gate:     mean=-17361 sd=1421 P(ROPE)=0.000 GA=F GB=P
+  deepsets                        188746  +101170       110439   -17375
+    in-split gate: mean=+101170 sd=1421 P(ROPE)=0.000 GA=F GB=P
+    hard gate:     mean=-17375 sd=1421 P(ROPE)=0.000 GA=F GB=P
+
+Saved to /home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control/finance/experiments/results/bbg_level2_uncertainty_2026-04-13_dev.txt

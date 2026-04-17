@@ -57,19 +57,142 @@ All values finite. Quote ranges stable across grids. Censoring localized to 1 op
 - P(>0) = 0.00002
 - 95% CrI = [-57,397, -20,097]
 
-### Interpretation
+### Interpretation (raw wealth)
 
 BBG numerical quotes wider than risk-neutral due to gamma=1e-3, trading off spread capture for inventory risk. Average |vega| is 28% lower under BBG (3.4M vs 4.7M). This is the expected behavior: risk aversion reduces position size.
 
-The negative BBG - RN contrast means the risk-neutral controller earns more in this simulation because the Heston path noise is symmetric (no systematic adverse selection from inventory). In a real market with asymmetric information, the BBG controller's risk management would matter more.
+The negative BBG - RN contrast in raw wealth means the risk-neutral controller earns more in expected wealth. However, this is the WRONG metric for comparison: BBG optimizes a risk-adjusted objective, not raw expected wealth.
+
+## BBG-objective consistency check
+
+BBG's controller solves a CARA utility problem with gamma=1e-3. The benchmark-consistent metrics are:
+
+### CARA certainty equivalent
+
+CE = -1/gamma * ln(E[exp(-gamma * W_T)])
+
+Uses log-sum-exp trick for numerical stability at these wealth scales.
+
+### Mean-variance surrogate
+
+MV = E[W_T] - (gamma/2) * Var(W_T)
+
+Approximate CE when gamma * Var(W)^{1/2} is moderate.
+
+### Results (200 episodes, fine grid 120x20x40)
+
+| Controller | Mean wealth | Std wealth | CARA CE | Mean-var |
+|---|---|---|---|---|
+| Risk-neutral | 445,621 | 147,017 | 116,570 | -10,361,431 |
+| BBG numerical | 406,874 | 131,654 | 78,985 | -8,259,437 |
+
+**CARA CE: BBG - RN** (bootstrap, 10K resamples):
+- mean = -39,159
+- sd_post = 39,599
+- P(>0) = 0.237
+- 95% CrI = [-99,714, +37,662]
+
+**Mean-variance surrogate: BBG - RN** = +2,101,994
+
+### Interpretation (risk-adjusted)
+
+The CARA CE and mean-variance surrogate give DIFFERENT answers:
+
+1. **Mean-variance surrogate**: BBG wins by +2.1M. The variance reduction
+   (131K vs 147K std) dominates the 39K mean wealth shortfall.
+
+2. **CARA CE**: INCONCLUSIVE (P(BBG>RN) = 0.24). RN has higher CE (117K vs 79K).
+
+The discrepancy occurs because γσ ≈ 130, far from the small-risk regime where
+CE ≈ MV. In this regime, CARA CE is dominated by the **left tail** of the wealth
+distribution. With 200 episodes and symmetric Heston noise, RN's higher mean
+wealth shifts the distribution right enough that its left tail is no worse than
+BBG's, despite the higher variance.
+
+This is an honest finding:
+- BBG's risk management reduces variance by 28% (measured by |vega|)
+- But in the BBG env with symmetric Heston noise and short horizon,
+  the extra spread capture from aggressive (RN) quoting matters more
+  for the CARA left tail than the variance reduction
+- Under mean-variance (valid for small γσ), BBG clearly wins
+- Under CARA CE at these parameter scales, the comparison is inconclusive
+
+## Formal recovery evaluation (Outcome C)
+
+**Date**: 2026-04-10
+**Script**: `finance/experiments/bbg_recovery_formal.py`
+
+### Setup
+
+- Train: 100 episodes (seeds 0-99) for baseline fitting
+- SDRE exploration: 500 episodes (seeds 0-499, separate noise seed)
+- Test: 500 episodes (seeds 2000-2499, disjoint from training)
+- BBG grids: medium (60x15x30), fine (120x20x40), finer (180x25x50)
+
+### CARA CE results (500 test episodes)
+
+| Controller | CARA CE | Mean W | Std W |
+|---|---|---|---|
+| risk_neutral | 104,985 | 437,416 | 142,386 |
+| bbg_fine | 89,185 | 412,204 | 136,385 |
+| bbg_finer | 89,320 | 413,144 | 136,629 |
+| global_width (alpha=-0.3) | 91,351 | 407,748 | 121,736 |
+| global_width_skew (alpha=-0.3, beta=0.5) | 100,643 | 403,712 | 114,618 |
+| action_pca_r1 | 106,126 | 440,289 | 141,035 |
+| bilinear_2stage_r1 | 112,687 | 440,652 | 142,201 |
+
+### Anti-triviality check
+
+| Contrast | mean | sd_post | P(>0) |
+|---|---|---|---|
+| ActionPCA_r1 - global_width_skew | +16,203 | 29,981 | 0.77 |
+| Bilinear_2S_r1 - global_width_skew | +6,485 | 30,866 | 0.65 |
+
+Neither learned controller decisively exceeds the 2-parameter width+skew baseline.
+
+### Grid refinement stability
+
+| Grid | BBG CE | APr1 CE | APr1 - BBG |
+|---|---|---|---|
+| medium | 89,018 | 106,126 | +17,107 |
+| fine | 89,185 | 106,126 | +16,941 |
+| finer | 89,320 | 106,126 | +16,805 |
+
+The gap is stable across grids (no benchmark-resolution artifact).
+
+### Outcome classification: C (mostly retuning)
+
+The learned controllers are competitive with risk-neutral and exceed BBG on CARA CE,
+but the simple 2-parameter width+skew baseline (CE=100,643) explains most of the
+apparent gain. The learned rank-1 direction (CE=106-113K) is only marginally better
+(P=0.65-0.77), and the improvement is not statistically decisive.
+
+**What is real:**
+- The BBG benchmark is solid and grid-converged
+- The CARA CE metric is consistent and numerically stable
+- The learned action subspace has genuine low-rank structure (EV rank-3 = 91%)
+- The BBG controller's variance reduction is real (28% lower |vega|)
+- The learned directions target specific strike-maturity combinations (not global width)
+
+**What is not established:**
+- The learned controller does not clearly beat a trivial 2-parameter baseline
+- The "outperformance over BBG" was driven by the CARA metric favoring RN-like
+  controllers at these parameter scales, not by learned action geometry
+
+**Honest framing:** The recovery result is a valid demonstration of learned low-rank
+action structure in a 40D option market-making environment. The action rank-2 elbow
+and the specific learned directions (targeting ATM short-dated options) are genuinely
+interpretable. But the CE improvement over simple baselines is marginal, and the main
+driver of apparent BBG-beating is the CARA metric's preference for risk-neutral-like
+behavior at γσ ≈ 130.
 
 ## Assessment
 
-The BBG benchmark is now numerically stable and scientifically honest:
+The BBG benchmark is numerically stable and scientifically honest:
 - Full 3D solver runs in ~67s on paper-default 20-option book
 - Values are finite at all tested grid resolutions
 - Quote ranges converge across grids
 - Censoring is localized and documented
 - Both controllers produce economically sensible behavior
-
-**This benchmark is solid enough to serve as the thesis reference point** for SDRE recovery comparisons. The next step is to bring back the local-quadratic / SDRE controller track as a separate candidate evaluated against this benchmark.
+- Benchmark-consistent risk-adjusted criterion included
+- Formal anti-triviality and grid-refinement checks completed

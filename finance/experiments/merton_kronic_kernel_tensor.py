@@ -37,6 +37,8 @@ def rbf_gram(X, Y=None, sigma=1.0):
 
 
 class KernelKoopmanTensor:
+    rbf_gram = staticmethod(rbf_gram)
+
     def __init__(self, sigma_x=None, sigma_pi=None, horizon=10, dt=1/252,
                  epsilon=1e-3, n_landmarks_x=60, n_landmarks_pi=15, n_pca=20):
         self.sigma_x, self.sigma_pi = sigma_x, sigma_pi
@@ -83,6 +85,10 @@ class KernelKoopmanTensor:
 
         # 4. Transfer Operator Ridge Fit (Stronger Regularization)
         K_T = Ridge(alpha=0.1, fit_intercept=False).fit(Psi0, PsiT).coef_.T
+        pred = Psi0 @ K_T
+        ss_res = np.sum((PsiT - pred) ** 2)
+        ss_tot = np.sum((PsiT - PsiT.mean(axis=0)) ** 2)
+        self.operator_r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
         
         w, v = np.linalg.eig(K_T)
         idx = np.argsort(np.abs(np.log(np.abs(w) + 1e-9)))
@@ -114,10 +120,10 @@ class KernelKoopmanTensor:
         self.w_util_base = w_base * self._U_std
         self.w_util = w_skill * self._U_std
         
+        U_p = (Psi_X @ w_base + Psi_Joint @ w_skill) * self._U_std + self._U_mu
+        self.utility_r2 = float(1 - np.sum((U_T - U_p)**2) / np.sum((U_T - np.mean(U_T))**2))
         if verbose:
-            U_p = (Psi_X @ w_base + Psi_Joint @ w_skill) * self._U_std + self._U_mu
-            R2 = 1 - np.sum((U_T - U_p)**2) / np.sum((U_T - np.mean(U_T))**2)
-            print(f"   [KKT/Link-RBF] Joint Action-R2={R2:.4f}")
+            print(f"   [KKT/Link-RBF] Joint Action-R2={self.utility_r2:.4f}")
 
 
     def get_value_landscape(self, psi_x, pi_grid, use_drift=False):
@@ -139,6 +145,8 @@ class KernelMertonController:
         self.extractor = StateSignatureExtractor(depth=depth, device=device)
         self.kkt, self.scaler = None, StandardScaler()
         self.switching_penalty = switching_penalty
+        self.operator_r2 = float("nan")
+        self.utility_r2 = float("nan")
 
     def generate_training_data(self, n_paths=400, n_mc=40, momentum=True):
         print(f"1. Generating Training Data (N={n_paths}, MC={n_mc}, Momentum={momentum})")
@@ -164,7 +172,9 @@ class KernelMertonController:
             
             path = np.array(path); path[:, 0] -= path[-1, 0]
             with torch.no_grad():
-                psi0 = self.extractor.extract(torch.tensor(np.array([path]), dtype=torch.float64))[0].cpu().numpy()
+                psi0 = self.extractor.extract(
+                    torch.from_numpy(path[None]).to(dtype=torch.float64)
+                )[0].cpu().numpy()
             
             lwp, vp, _ = path[-1]
             Ur = []
@@ -189,30 +199,57 @@ class KernelMertonController:
             self.kkt._pca = PCA(n_components=self.n_pca, random_state=42).fit(self.kkt._transform(X0))
         self.kkt.fit(X0, XT, pi)
         self.kkt.fit_utility(UT)
+        self.operator_r2 = self.kkt.operator_r2
+        self.utility_r2 = self.kkt.utility_r2
+
+    def _normalize_history(self, state_history):
+        hist = np.asarray(state_history, dtype=float)
+        if hist.ndim != 2 or hist.shape[1] not in (2, 3):
+            raise ValueError("state_history must have shape (T, 2) or (T, 3)")
+        if hist.shape[1] == 2:
+            hist = np.hstack([hist, np.zeros((len(hist), 1))])
+        if not np.all(np.isfinite(hist)):
+            raise ValueError("state_history contains non-finite values")
+        hist[:, 0] -= hist[-1, 0]
+        return hist
+
+    def evaluate_state(self, state_history):
+        if self.kkt is None:
+            raise RuntimeError("KernelMertonController must be trained before evaluation")
+
+        hist = self._normalize_history(state_history)
+        with torch.no_grad():
+            raw = self.extractor.extract(
+                torch.from_numpy(hist[None]).to(device=self.device, dtype=torch.float64)
+            )[0].cpu().numpy()
+
+        if not np.all(np.isfinite(raw)):
+            raise ValueError("non-finite signature features during KKT evaluation")
+
+        Xp = self.kkt._transform(raw[None])
+        psi = rbf_gram(Xp, self.kkt._lm_x, self.kkt.sigma_x)[0]
+        pi_grid = np.linspace(0.0, 5.0, 100)
+        value_grid = self.kkt.get_value_landscape(psi, pi_grid)
+
+        pi_prev = float(hist[-1, 2])
+        penalty = self.switching_penalty * (pi_grid - pi_prev)**2
+        objective = value_grid - penalty
+        if not np.all(np.isfinite(objective)):
+            raise ValueError("non-finite KKT objective grid during allocation search")
+
+        idx = int(np.argmax(objective))
+        return {
+            "pi_opt": float(pi_grid[idx]),
+            "pi_prev": pi_prev,
+            "objective_max": float(objective[idx]),
+            "value_max": float(value_grid[idx]),
+        }
 
     def find_optimal_pi(self, state_history):
         """
         state_history: List of (logW, V, pi_prev) or (logW, V)
         """
-        hist = np.array(state_history)
-        if hist.shape[1] == 2: # No momentum in test point, add zero
-            hist = np.hstack([hist, np.zeros((len(hist), 1))])
-        
-        hist[:, 0] -= hist[-1, 0]
-        with torch.no_grad():
-            raw = self.extractor.extract(torch.tensor(np.array([hist]), dtype=torch.float64, device=self.device))[0].cpu().numpy()
-        
-        Xp = self.kkt._transform(raw[None])
-        psi = rbf_gram(Xp, self.kkt._lm_x, self.kkt.sigma_x)[0]
-        
-        pi_grid = np.linspace(0.0, 5.0, 100)
-        V_grid = self.kkt.get_value_landscape(psi, pi_grid)
-        
-        # Action Switching Penalty (Inertia)
-        pi_prev = hist[-1, 2] # From the augmented state [logW, V, pi_prev]
-        penalty = self.switching_penalty * (pi_grid - pi_prev)**2
-        
-        return float(pi_grid[np.argmax(V_grid - penalty)])
+        return self.evaluate_state(state_history)["pi_opt"]
 
 
 class CrossValidatedKKT:

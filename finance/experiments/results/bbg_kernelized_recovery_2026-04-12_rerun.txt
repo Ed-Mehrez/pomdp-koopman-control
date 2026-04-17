@@ -1,0 +1,110 @@
+======================================================================
+  Kernelized State-Conditioned Recovery Experiment
+======================================================================
+  Train: 500 eps, Test: 2000 eps
+  KRR backend: cuda
+
+Solving HJB...
+  Solved in 64.6s
+
+  ROPE: h=7348, s_max=7348 (pilot gap=18370)
+
+Building non-kernelized SDRE controllers (BBG exploration)...
+
+Fitting simple anti-triviality baselines...
+  global_width alpha=-0.025 train_CE=100044
+  global_width_skew alpha=-0.300 beta=+3.000 train_CE=155793
+  sdre_action_pca_r1 (21.6s)
+  sdre_action_pca_r2 (22.7s)
+  sdre_action_pca_r3 (22.1s)
+  sdre_bilinear_2stage_r1 (22.0s)
+  sdre_bilinear_2stage_r2 (22.4s)
+  sdre_bilinear_2stage_r3 (22.2s)
+
+Building kernelized recovery controllers...
+  kern_action_pca_r1_compact (23.4s)
+  kern_action_pca_r1_rich (22.0s)
+  kern_action_pca_r2_compact (21.4s)
+  kern_action_pca_r2_rich (22.8s)
+  kern_action_pca_r3_compact (22.3s)
+  kern_action_pca_r3_rich (23.0s)
+  kern_bilinear_2stage_r1_compact (22.7s)
+  kern_bilinear_2stage_r1_rich (23.2s)
+  kern_bilinear_2stage_r2_compact (23.0s)
+  kern_bilinear_2stage_r2_rich (23.1s)
+  kern_bilinear_2stage_r3_compact (22.4s)
+  kern_bilinear_2stage_r3_rich (23.2s)
+
+======================================================================
+  Test Evaluation (2000 episodes)
+======================================================================
+  risk_neutral                             CE=     74430  mean=    442088  std=  142960  (23.2s)
+  bbg_numerical                            CE=     81666  mean=    411302  std=  131472  (88.7s)
+  global_width                             CE=     73790  mean=    441935  std=  142342  (22.6s)
+  global_width_skew                        CE=     50974  mean=    335000  std=   90480  (23.3s)
+  sdre_action_pca_r1                       CE=     74604  mean=    439901  std=  145211  (29.4s)
+  sdre_action_pca_r2                       CE=     74664  mean=    436384  std=  148670  (29.8s)
+  sdre_action_pca_r3                       CE=     74174  mean=    435824  std=  146452  (30.2s)
+  sdre_bilinear_2stage_r1                  CE=     44034  mean=    425634  std=  135528  (28.6s)
+  sdre_bilinear_2stage_r2                  CE=     66614  mean=    399246  std=  132826  (30.5s)
+  sdre_bilinear_2stage_r3                  CE=     57094  mean=    331836  std=  127540  (30.1s)
+  kern_action_pca_r1_compact               CE=     74441  mean=    441468  std=  143509  (48.8s)
+  kern_action_pca_r1_rich                  CE=     74441  mean=    441338  std=  143349  (53.3s)
+  kern_action_pca_r2_compact               CE=     74439  mean=    440717  std=  145786  (47.3s)
+  kern_action_pca_r2_rich                  CE=     74439  mean=    441308  std=  145100  (51.1s)
+  kern_action_pca_r3_compact               CE=     81626  mean=    440055  std=  144481  (47.8s)
+  kern_action_pca_r3_rich                  CE=     81628  mean=    441338  std=  144093  (50.8s)
+  kern_bilinear_2stage_r1_compact          CE=     34881  mean=    291181  std=  107271  (47.6s)
+  kern_bilinear_2stage_r1_rich             CE=     38081  mean=    298676  std=  110989  (51.3s)
+  kern_bilinear_2stage_r2_compact          CE=     31702  mean=    219734  std=   94591  (47.1s)
+  kern_bilinear_2stage_r2_rich             CE=     29942  mean=    226921  std=  102037  (50.6s)
+  kern_bilinear_2stage_r3_compact          CE=     -4826  mean=    189442  std=   96097  (47.0s)
+  kern_bilinear_2stage_r3_rich             CE=     -3505  mean=    197902  std=   96768  (51.2s)
+
+======================================================================
+  Recovery Gate (h=7348, s_max=7348)
+  BBG CE=81666, RN CE=74430
+======================================================================
+
+  Candidate                                   mean      sd   P(R)   GA   GB                95% CrI
+  ------------------------------------------------------------------------------------------------
+  global_width                               -7877    1412  0.354    .    Y [   -10644,     -5110]
+  global_width_skew                         -30693    1414  0.000    .    Y [   -33464,    -27922]
+  kern_action_pca_r1_compact                 -7225    1340  0.536    .    Y [    -9852,     -4599]
+  kern_action_pca_r1_rich                    -7226    1340  0.536    .    Y [    -9852,     -4599]
+  kern_action_pca_r2_compact                 -7228    1345  0.536    .    Y [    -9864,     -4591]
+  kern_action_pca_r2_rich                    -7227    1345  0.536    .    Y [    -9863,     -4591]
+  kern_action_pca_r3_compact                   -40    1406  1.000    Y    Y [    -2796,      2715]
+  kern_action_pca_r3_rich                      -38    1409  1.000    Y    Y [    -2799,      2723]
+  kern_bilinear_2stage_r1_compact           -46786    1414  0.000    .    Y [   -49557,    -44015]
+  kern_bilinear_2stage_r1_rich              -43586    1414  0.000    .    Y [   -46357,    -40815]
+  kern_bilinear_2stage_r2_compact           -49964    1381  0.000    .    Y [   -52671,    -47258]
+  kern_bilinear_2stage_r2_rich              -51725    1379  0.000    .    Y [   -54427,    -49023]
+  kern_bilinear_2stage_r3_compact           -86493    1403  0.000    .    Y [   -89242,    -83743]
+  kern_bilinear_2stage_r3_rich              -85171    1226  0.000    .    Y [   -87574,    -82768]
+  sdre_action_pca_r1                         -7062    1321  0.586    .    Y [    -9651,     -4474]
+  sdre_action_pca_r2                         -7003    1320  0.603    .    Y [    -9589,     -4417]
+  sdre_action_pca_r3                         -7493    1323  0.456    .    Y [   -10087,     -4899]
+  sdre_bilinear_2stage_r1                   -37633    1414  0.000    .    Y [   -40404,    -34862]
+  sdre_bilinear_2stage_r2                   -15053    1414  0.000    .    Y [   -17824,    -12282]
+  sdre_bilinear_2stage_r3                   -24572    1233  0.000    .    Y [   -26989,    -22155]
+
+======================================================================
+  Non-kernelized vs Kernelized (same basis, same rank)
+======================================================================
+  kern_action_pca_r1_compact               CE=   74441  vs SDRE    74604  Δ=    -163
+  kern_action_pca_r1_rich                  CE=   74441  vs SDRE    74604  Δ=    -163
+  kern_action_pca_r2_compact               CE=   74439  vs SDRE    74664  Δ=    -225
+  kern_action_pca_r2_rich                  CE=   74439  vs SDRE    74664  Δ=    -224
+  kern_action_pca_r3_compact               CE=   81626  vs SDRE    74174  Δ=   +7453
+  kern_action_pca_r3_rich                  CE=   81628  vs SDRE    74174  Δ=   +7455
+  kern_bilinear_2stage_r1_compact          CE=   34881  vs SDRE    44034  Δ=   -9153
+  kern_bilinear_2stage_r1_rich             CE=   38081  vs SDRE    44034  Δ=   -5953
+  kern_bilinear_2stage_r2_compact          CE=   31702  vs SDRE    66614  Δ=  -34911
+  kern_bilinear_2stage_r2_rich             CE=   29942  vs SDRE    66614  Δ=  -36672
+  kern_bilinear_2stage_r3_compact          CE=   -4826  vs SDRE    57094  Δ=  -61920
+  kern_bilinear_2stage_r3_rich             CE=   -3505  vs SDRE    57094  Δ=  -60599
+
+======================================================================
+  Anti-triviality Check
+======================================================================

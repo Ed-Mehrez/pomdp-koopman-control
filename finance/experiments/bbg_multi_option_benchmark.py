@@ -1,6 +1,8 @@
-"""Phase 3A: Full multi-option BBG benchmark validation.
+"""Full multi-option BBG benchmark with risk-adjusted metrics.
 
 Paper-default 20-option book, full 3D HJB solver, BBG numerical vs risk-neutral.
+Reports CARA certainty equivalent and mean-variance surrogate in addition to
+raw wealth, providing a benchmark-consistent comparison.
 
 Usage:
     python finance/experiments/bbg_multi_option_benchmark.py
@@ -28,6 +30,51 @@ from applications.option_mm_bbg.solver import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Risk-adjusted metrics
+# ---------------------------------------------------------------------------
+
+
+def cara_ce(wealths: np.ndarray, gamma: float) -> float:
+    """CARA certainty equivalent: CE = -1/gamma * ln(E[exp(-gamma * W)]).
+
+    Uses log-sum-exp trick for numerical stability.
+    """
+    if gamma == 0.0:
+        return float(np.mean(wealths))
+    neg_gamma_w = -gamma * wealths
+    max_val = float(np.max(neg_gamma_w))
+    log_mean_exp = max_val + np.log(np.mean(np.exp(neg_gamma_w - max_val)))
+    return -log_mean_exp / gamma
+
+
+def mean_var_surrogate(wealths: np.ndarray, gamma: float) -> float:
+    """Mean-variance surrogate: E[W] - (gamma/2) Var(W)."""
+    return float(np.mean(wealths) - 0.5 * gamma * np.var(wealths))
+
+
+def bootstrap_ce_diff(
+    w_a: np.ndarray,
+    w_b: np.ndarray,
+    gamma: float,
+    n_boot: int = 10_000,
+    seed: int = 999,
+) -> dict:
+    """Bootstrap posterior for CE_a - CE_b using paired resampling."""
+    rng = np.random.default_rng(seed)
+    n = len(w_a)
+    diffs = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        diffs[i] = cara_ce(w_a[idx], gamma) - cara_ce(w_b[idx], gamma)
+    return {
+        "mean": float(np.mean(diffs)),
+        "sd_post": float(np.std(diffs)),
+        "p_pos": float(np.mean(diffs > 0)),
+        "ci_95": (float(np.percentile(diffs, 2.5)), float(np.percentile(diffs, 97.5))),
+    }
+
+
 def main() -> int:
     out: list[str] = []
 
@@ -36,12 +83,13 @@ def main() -> int:
         out.append(msg)
 
     config = BBGBenchmarkConfig.paper_default()
+    gamma = config.control.gamma
 
     log("=" * 70)
     log("  Full Multi-Option BBG Benchmark (Paper Default)")
     log("=" * 70)
     log(f"  Options: {config.book.n_options}")
-    log(f"  Gamma: {config.control.gamma}")
+    log(f"  Gamma: {gamma}")
     log(f"  Horizon: {config.control.horizon} yr")
     log(f"  Vega limit: {config.control.vega_limit:.0e}")
 
@@ -97,12 +145,16 @@ def main() -> int:
         log(f"    spread:  mean={s.mean():.2f}")
         log(f"    |vega|:  mean={v.mean():.0f}")
         log(f"    |delta|: mean={d.mean():.2f}")
+        ce = cara_ce(w, gamma)
+        mv = mean_var_surrogate(w, gamma)
+        log(f"    CARA CE (gamma={gamma}): {ce:.2f}")
+        log(f"    mean-var surrogate:      {mv:.2f}")
         return w
 
     w_bbg = run_episodes(bbg_ctrl, "BBG numerical")
     w_rn = run_episodes(rn_ctrl, "Risk-neutral")
 
-    # Paired comparison
+    # --- Raw wealth paired comparison ---
     diff = w_bbg - w_rn
     mean_d = float(np.mean(diff))
     std_d = float(np.std(diff, ddof=1))
@@ -110,11 +162,41 @@ def main() -> int:
     from scipy.stats import norm
     p_pos = float(norm.cdf(mean_d / se_d)) if se_d > 0 else 0.5
 
-    log(f"\n  BBG numerical - Risk-neutral:")
+    log(f"\n  === Raw wealth: BBG numerical - Risk-neutral ===")
     log(f"    mean = {mean_d:.2f}")
     log(f"    sd_post = {se_d:.2f}")
     log(f"    P(>0) = {p_pos:.5f}")
     log(f"    95% CrI = [{mean_d - 1.96*se_d:.2f}, {mean_d + 1.96*se_d:.2f}]")
+
+    # --- CARA CE paired comparison (bootstrap) ---
+    log(f"\n  === CARA CE: BBG numerical - Risk-neutral (gamma={gamma}) ===")
+    boot = bootstrap_ce_diff(w_bbg, w_rn, gamma)
+    log(f"    mean = {boot['mean']:.2f}")
+    log(f"    sd_post = {boot['sd_post']:.2f}")
+    log(f"    P(>0) = {boot['p_pos']:.5f}")
+    log(f"    95% CrI = [{boot['ci_95'][0]:.2f}, {boot['ci_95'][1]:.2f}]")
+
+    # --- Mean-variance surrogate ---
+    mv_bbg = mean_var_surrogate(w_bbg, gamma)
+    mv_rn = mean_var_surrogate(w_rn, gamma)
+    log(f"\n  === Mean-variance surrogate (gamma={gamma}) ===")
+    log(f"    BBG numerical: {mv_bbg:.2f}")
+    log(f"    Risk-neutral:  {mv_rn:.2f}")
+    log(f"    Difference:    {mv_bbg - mv_rn:.2f}")
+
+    # --- Interpretation ---
+    ce_bbg = cara_ce(w_bbg, gamma)
+    ce_rn = cara_ce(w_rn, gamma)
+    log(f"\n  === Interpretation ===")
+    if boot["p_pos"] > 0.95:
+        log(f"    BBG WINS under CARA CE: BBG earns {boot['mean']:.0f} more CE-EUR")
+        log(f"    The variance reduction from risk management dominates the lower mean wealth.")
+    elif boot["p_pos"] < 0.05:
+        log(f"    BBG LOSES under CARA CE: RN earns {-boot['mean']:.0f} more CE-EUR")
+        log(f"    Even with risk adjustment, variance reduction does not compensate.")
+    else:
+        log(f"    INCONCLUSIVE under CARA CE (P(>0)={boot['p_pos']:.3f})")
+        log(f"    The risk-adjusted difference is not clearly signed.")
 
     # Save
     results_dir = PROJECT_ROOT / "finance" / "experiments" / "results"

@@ -1,0 +1,46 @@
+==============================================================================
+  BBG State-Conditional Level-2  (smoke)
+==============================================================================
+  Options: 20  gamma: 0.001
+  Exploration: 200  Eval: 50  rank: 3
+  BBG is evaluation-only (no action supervision).
+
+Training global SDRE (primary baseline)...
+  trained in 4.2s
+  singular values (top 5): [561250.351 345987.915 281139.65 ]
+  cumulative EV at rank 3: 0.9267
+
+Training state-conditional SDRE (candidate)...
+  trained in 8.5s
+  head fit (N=6000, test=1200):
+    spread R^2  train=0.0218  test=-0.0154
+    vega   R^2  train=0.0746   test=0.0898
+
+Evaluating on 50 held-out seeds...
+  risk_neutral (floor)         n= 50  mean_W=   433434  sd_W=  119809  spread=  431595  |vega|=4456516  (0.9s)
+  sdre_global (primary A/B)    n= 50  mean_W=   407504  sd_W=  115006  spread=  411803  |vega|=4591527  (1.0s)
+  sdre_state_cond (candidate)  n= 50  mean_W=   432795  sd_W=  147508  spread=  435139  |vega|=4855414  (1.2s)
+
+------------------------------------------------------------------------------
+Paired CE posteriors (CARA, delta method)
+------------------------------------------------------------------------------
+  state_cond - sdre_global [PRIMARY] mean=    25283  sd=   21267  P(>0)=0.8827  95% CrI=[   -16400,     66967]
+  state_cond - risk_neutral          mean=     -648  sd=   20296  P(>0)=0.4873  95% CrI=[   -40427,     39131]
+  sdre_global - risk_neutral         mean=   -25931  sd=   13072  P(>0)=0.0236  95% CrI=[   -51551,      -311]
+
+------------------------------------------------------------------------------
+CE summary
+------------------------------------------------------------------------------
+  controller                               CE        mean W          sd W
+  risk_neutral                         224206        433434        119809
+  sdre_global                          146843        407504        115006
+  sdre_state_cond                      146681        432795        147508
+
+------------------------------------------------------------------------------
+Notes
+------------------------------------------------------------------------------
+  - Primary claim target: state_cond - sdre_global CE contrast.
+  - BBG is oracle reference (training uses NO BBG actions).
+  - Per-step head R^2 is small by construction: Poisson arrival noise
+    dominates per-step spread. Controller quality is the metric, not R^2.
+  - 'smoke' mode: dev/smoke. Do NOT cite as a formal claim.

@@ -1,0 +1,147 @@
+======================================================================
+  Level-2 Uncertainty: Encoder + Bayesian KRR Head
+======================================================================
+  Train: 500 eps
+  In-split eval: seeds 2000-2399 (400 eps)
+  Hard eval:     seeds 4000-4399 (400 eps)
+
+Solving HJB...
+  Solved in 67.5s
+
+  ROPE: h=7348, s_max=7348 (pilot gap=18370)
+
+Building ActionPCA r3 basis...
+  Done in 5.9s, basis shape=(40, 3)
+
+Evaluating BBG and RN references...
+  BBG CE  in-split=88962  hard=68844
+  RN CE   in-split=122106  hard=109639
+
+Building Level-2 controller: compact...
+  compact: 23.7s, n_train=3000
+
+Building Level-2 controller: rich...
+  rich: 25.8s, n_train=3000
+
+Building Level-2 controller: deepsets...
+  deepsets: 80.7s, n_train=3000
+    DeepSets train R²=0.9785, final_loss=0.000593
+
+======================================================================
+  Part 1: CE Evaluation
+======================================================================
+
+  Controller                 in-split CE      gap      hard CE      gap
+  ----------------------------------------------------------------------
+  BBG                              88962      ---        68844      ---
+  compact                         106095   +17134       113774   +44931
+    in-split gate: mean=+17134 sd=1416 P(ROPE)=0.000 GA=F GB=P
+    hard gate:     mean=+44931 sd=1299 P(ROPE)=0.000 GA=F GB=P
+  rich                            106479   +17517       114612   +45768
+    in-split gate: mean=+17517 sd=1416 P(ROPE)=0.000 GA=F GB=P
+    hard gate:     mean=+45768 sd=1263 P(ROPE)=0.000 GA=F GB=P
+  deepsets                        106475   +17513       113966   +45122
+    in-split gate: mean=+17513 sd=1416 P(ROPE)=0.000 GA=F GB=P
+    hard gate:     mean=+45122 sd=1230 P(ROPE)=0.000 GA=F GB=P
+
+======================================================================
+  Part 2: Prediction Error & Posterior Variance
+======================================================================
+
+  --- compact ---
+  in-split:
+    n_steps = 12000
+    per-coord RMSE: [0.0362737  0.03459851 0.04963302]
+    mean GP var = 0.019378, median = 0.010352
+    error-variance correlation = 0.2995
+    variance quantiles: 25%=0.006580 50%=0.010352 75%=0.017493 95%=0.058798
+  hard:
+    n_steps = 12000
+    per-coord RMSE: [0.03779551 0.03806958 0.04885536]
+    mean GP var = 0.017895, median = 0.010074
+    error-variance correlation = 0.3381
+    variance quantiles: 25%=0.006541 50%=0.010074 75%=0.017135 95%=0.051334
+
+  --- rich ---
+  in-split:
+    n_steps = 12000
+    per-coord RMSE: [0.03971913 0.03539459 0.05632146]
+    mean GP var = 0.180753, median = 0.141893
+    error-variance correlation = 0.3126
+    variance quantiles: 25%=0.074886 50%=0.141893 75%=0.237773 95%=0.495435
+  hard:
+    n_steps = 12000
+    per-coord RMSE: [0.04104283 0.04041355 0.05663168]
+    mean GP var = 0.175150, median = 0.137611
+    error-variance correlation = 0.3628
+    variance quantiles: 25%=0.073464 50%=0.137611 75%=0.229416 95%=0.485670
+
+  --- deepsets ---
+  in-split:
+    n_steps = 12000
+    per-coord RMSE: [0.00370861 0.00526239 0.00754134]
+    mean GP var = 0.001261, median = 0.000607
+    error-variance correlation = 0.2791
+    variance quantiles: 25%=0.000376 50%=0.000607 75%=0.001073 95%=0.004446
+  hard:
+    n_steps = 12000
+    per-coord RMSE: [0.00446481 0.00629501 0.00721291]
+    mean GP var = 0.001230, median = 0.000600
+    error-variance correlation = 0.2127
+    variance quantiles: 25%=0.000382 50%=0.000600 75%=0.001035 95%=0.004534
+
+======================================================================
+  Part 3: Latent Coverage (train vs in-split vs hard)
+======================================================================
+
+  --- compact (d=3) ---
+  in-split (n=12000):
+           tau_frac: train=+0.4889±0.2860  eval=+0.4833±0.2885  shift=0.02σ
+            nu_norm: train=+1.0017±0.0327  eval=+1.0004±0.0335  shift=0.04σ
+           vpi_norm: train=+0.0109±0.4069  eval=+0.0083±0.3987  shift=0.01σ
+  hard (n=12000):
+           tau_frac: train=+0.4889±0.2860  eval=+0.4833±0.2885  shift=0.02σ
+            nu_norm: train=+1.0017±0.0327  eval=+1.0008±0.0316  shift=0.03σ
+           vpi_norm: train=+0.0109±0.4069  eval=+0.0171±0.4018  shift=0.02σ
+
+  --- rich (d=7) ---
+  in-split (n=12000):
+           tau_frac: train=+0.4889±0.2860  eval=+0.4833±0.2885  shift=0.02σ
+            nu_norm: train=+1.0017±0.0327  eval=+1.0004±0.0335  shift=0.04σ
+           vpi_norm: train=+0.0109±0.4069  eval=+0.0083±0.3987  shift=0.01σ
+          vpi_short: train=+0.0009±0.6268  eval=-0.0291±0.6133  shift=0.05σ
+           vpi_long: train=+0.0100±0.6355  eval=+0.0374±0.6054  shift=0.04σ
+          vega_conc: train=+3.2243±3.0696  eval=+3.2091±3.0803  shift=0.00σ
+      dist_to_limit: train=+0.6797±0.2511  eval=+0.6924±0.2538  shift=0.05σ
+  hard (n=12000):
+           tau_frac: train=+0.4889±0.2860  eval=+0.4833±0.2885  shift=0.02σ
+            nu_norm: train=+1.0017±0.0327  eval=+1.0008±0.0316  shift=0.03σ
+           vpi_norm: train=+0.0109±0.4069  eval=+0.0171±0.4018  shift=0.02σ
+          vpi_short: train=+0.0009±0.6268  eval=+0.0241±0.6194  shift=0.04σ
+           vpi_long: train=+0.0100±0.6355  eval=-0.0071±0.6094  shift=0.03σ
+          vega_conc: train=+3.2243±3.0696  eval=+3.2569±3.1520  shift=0.01σ
+      dist_to_limit: train=+0.6797±0.2511  eval=+0.6878±0.2535  shift=0.03σ
+
+  --- deepsets (d=8) ---
+  train latent: mean_norm=0.3424, per-dim std range=[0.0407, 0.1156]
+    z[0] in-split: train=-0.0422±0.1156  eval=-0.0368±0.1130  shift=0.05σ
+    z[1] in-split: train=-0.1598±0.0492  eval=-0.1597±0.0482  shift=0.00σ
+    z[2] in-split: train=+0.2227±0.0904  eval=+0.2224±0.0884  shift=0.00σ
+    z[3] in-split: train=-0.0985±0.0590  eval=-0.0974±0.0575  shift=0.02σ
+    z[0] hard: train=-0.0422±0.1156  eval=-0.0402±0.1156  shift=0.02σ
+    z[1] hard: train=-0.1598±0.0492  eval=-0.1613±0.0475  shift=0.03σ
+    z[2] hard: train=+0.2227±0.0904  eval=+0.2253±0.0883  shift=0.03σ
+    z[3] hard: train=-0.0985±0.0590  eval=-0.0973±0.0582  shift=0.02σ
+
+======================================================================
+  Part 4: Summary & Level 3 Escalation Check
+======================================================================
+
+  Level 3 escalation indicators:
+  1. Head variance modest on hard seeds that still fail badly?
+  2. Different encoders give very different hard-slice behavior?
+  3. Train vs hard latent distributions badly shifted?
+  4. Richer encoder + Bayesian head still fails same pattern?
+  5. Encoder does not separate easy vs hard in latent space?
+
+  (Manual interpretation required — see diagnostics above)

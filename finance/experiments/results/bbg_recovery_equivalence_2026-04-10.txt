@@ -1,0 +1,86 @@
+======================================================================
+  BBG Recovery / Equivalence Experiment
+======================================================================
+  Train: 500 eps, Test: 2000 eps
+  Gamma: 0.001
+
+Solving 3D HJB (fine grid)...
+  Solved in 76.1s
+
+Calibrating ROPE from baseline CEs (500-episode pilot)...
+  RN CE (pilot): 81392
+  BBG CE (pilot): 99762
+  BBG-RN gap: 18370
+  ROPE h = 7348  (40% of |gap|)
+  Precision s_max = 7348
+
+Collecting BBG demonstrations (500 train episodes)...
+  15000 state-action pairs in 24.6s
+
+Fitting demonstration recovery controllers...
+  demo_r1: singular values = [1.67293912]
+  demo_r2: singular values = [1.67293912 1.57946236]
+  demo_r3: singular values = [1.67293912 1.57946236 0.84151388]
+
+Building SDRE recovery controllers (BBG-regime exploration)...
+  Training sdre_action_pca_r1...
+    Done in 25.0s
+  Training sdre_action_pca_r2...
+    Done in 25.2s
+  Training sdre_action_pca_r3...
+    Done in 25.1s
+  Training sdre_bilinear_2stage_r1...
+    Done in 25.0s
+  Training sdre_bilinear_2stage_r2...
+    Done in 25.0s
+  Training sdre_bilinear_2stage_r3...
+    Done in 24.6s
+
+Building simple baselines...
+  global_width: alpha=-0.300
+  global_width_skew: alpha=-0.300, beta=0.500
+
+======================================================================
+  Test Evaluation (2000 episodes)
+======================================================================
+  risk_neutral                   CE=     74430  mean=    442088  std=  142960  (23.9s)
+  bbg_numerical                  CE=     81666  mean=    411302  std=  131472  (98.7s)
+  demo_r1                        CE=     -1845  mean=    180213  std=   85542  (25.6s)
+  demo_r2                        CE=    -19177  mean=    175963  std=   82995  (25.8s)
+  demo_r3                        CE=     -6900  mean=    183422  std=   98899  (25.5s)
+  sdre_action_pca_r1             CE=     74604  mean=    439901  std=  145211  (31.0s)
+  sdre_action_pca_r2             CE=     74664  mean=    436384  std=  148670  (30.9s)
+  sdre_action_pca_r3             CE=     74174  mean=    435824  std=  146452  (31.8s)
+  sdre_bilinear_2stage_r1        CE=     44034  mean=    425634  std=  135528  (29.9s)
+  sdre_bilinear_2stage_r2        CE=     66614  mean=    399246  std=  132826  (30.5s)
+  sdre_bilinear_2stage_r3        CE=     57094  mean=    331836  std=  127540  (31.4s)
+  global_width                   CE=     72246  mean=    411608  std=  118749  (24.0s)
+  global_width_skew              CE=     95398  mean=    406417  std=  110603  (25.0s)
+
+======================================================================
+  Recovery Gate (h=7348, s_max=7348)
+  BBG CE=81666, RN CE=74430, gap=7237
+======================================================================
+
+  Candidate                          mean       sd  P(ROPE)  GateA  GateB   BOTH    gap%                95% CrI
+  ----------------------------------------------------------------------------------------------------------
+  demo_r1                          -80904     9168    0.000   FAIL   FAIL   FAIL -1118% [   -93108,    -60507]
+  demo_r2                          -93802    14145    0.000   FAIL   FAIL   FAIL -1296% [  -110116,    -66760]
+  demo_r3                          -89937     5871    0.000   FAIL   PASS   FAIL -1243% [   -98041,    -77959]
+  global_width                      -5885    12337    0.252   FAIL   FAIL   FAIL   -81% [   -19017,     20752]
+  global_width_skew                 16032    11568    0.199   FAIL   FAIL   FAIL   222% [     4014,     56783]
+  sdre_action_pca_r1                -8194     6289    0.537   FAIL   PASS   FAIL  -113% [   -16704,      6333]
+  sdre_action_pca_r2                -8069     6549    0.543   FAIL   PASS   FAIL  -112% [   -16643,      6624]
+  sdre_action_pca_r3                -9011     6071    0.366   FAIL   PASS   FAIL  -125% [   -17145,      -425]
+  sdre_bilinear_2stage_r1          -24767    22258    0.289   FAIL   FAIL   FAIL  -342% [   -47002,     27372]
+  sdre_bilinear_2stage_r2           -3454    20240    0.005   FAIL   FAIL   FAIL   -48% [   -24422,     31921]
+  sdre_bilinear_2stage_r3          -26244     5647    0.004   FAIL   PASS   FAIL  -363% [   -34092,    -13566]
+
+======================================================================
+  Recovery Summary
+======================================================================
+  No candidate passes both gates.
+  Closest: sdre_action_pca_r2 (P(ROPE)=0.543)
+
+  *** OUTCOME: R3 ***
+  No recovery: candidates remain meaningfully away from BBG under paired ROPE test.

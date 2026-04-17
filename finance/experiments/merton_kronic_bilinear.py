@@ -402,6 +402,8 @@ class CQKRONICMerton:
         self.extractor = StateSignatureExtractor(depth=depth, device=self.device)
         self.koopman = None
         self.w_utility = None
+        self.koopman_fit_r2 = float("nan")
+        self.utility_fit_r2 = float("nan")
         
     def generate_training_data(self, n_paths=200, n_steps=252):
         """Generate (state, action, next_state) tuples with diverse pi coverage."""
@@ -445,8 +447,8 @@ class CQKRONICMerton:
                         raw_X[:, 0] -= shift
                         raw_Y[:, 0] -= shift
                         
-                        path_X = torch.tensor([raw_X], dtype=torch.float64, device=self.device)
-                        path_Y = torch.tensor([raw_Y], dtype=torch.float64, device=self.device)
+                        path_X = torch.from_numpy(raw_X[None]).to(device=self.device, dtype=torch.float64)
+                        path_Y = torch.from_numpy(raw_Y[None]).to(device=self.device, dtype=torch.float64)
                         
                         f_X = self.extractor.extract(path_X)[0].cpu().numpy()
                         f_Y = self.extractor.extract(path_Y)[0].cpu().numpy()
@@ -483,14 +485,14 @@ class CQKRONICMerton:
         self.koopman = ControlQuadraticKoopman(
             n_features=d, mode=self.mode, dt=self.dt
         )
-        self.koopman.fit(psi_X, psi_Y, pi_arr)
+        self.koopman_fit_r2 = self.koopman.fit(psi_X, psi_Y, pi_arr)
         
         print("3. Fitting Growth-Rate Utility on psi_Y...")
         ridge = Ridge(alpha=1.0)
         ridge.fit(psi_Y, U_Y)
         self.w_utility = ridge.coef_
-        r2 = ridge.score(psi_Y, U_Y)
-        print(f"   Utility R² (on psi_Y): {r2:.4f}")
+        self.utility_fit_r2 = float(ridge.score(psi_Y, U_Y))
+        print(f"   Utility R² (on psi_Y): {self.utility_fit_r2:.4f}")
         
         # Initialize: myopic (no future value)
         self.w_V = np.zeros_like(self.w_utility)
@@ -573,21 +575,32 @@ class CQKRONICMerton:
         print(f"   SKVI complete. |w_utility|={np.linalg.norm(self.w_utility):.4f}, "
               f"|w_V|={np.linalg.norm(self.w_V):.4f}")
     
-    def find_optimal_pi(self, state_history, pi_min=0.01, pi_max=10.0):
+    def evaluate_state(self, state_history, pi_min=0.01, pi_max=10.0):
         """
         Compute the optimal allocation using the quadratic structure.
         
         Uses w_combined = w_utility + γ·w_V from SKVI (if run),
         which includes hedging demand from future periods.
         """
+        if self.koopman is None or self.w_combined is None:
+            raise RuntimeError("CQKRONICMerton must be trained before evaluation")
+
         # Wealth Translation Invariance
-        hist = np.array(state_history)
+        hist = np.asarray(state_history, dtype=float)
+        if hist.ndim != 2 or hist.shape[1] < 2:
+            raise ValueError("state_history must have shape (T, 2) or (T, 3)")
+        if hist.shape[1] > 2:
+            hist = hist[:, :2]
+        if not np.all(np.isfinite(hist)):
+            raise ValueError("state_history contains non-finite values")
         shift = hist[-1, 0]
         hist[:, 0] -= shift
         
-        path = torch.tensor([hist], dtype=torch.float64, device=self.device)
+        path = torch.from_numpy(hist[None]).to(device=self.device, dtype=torch.float64)
         with torch.no_grad():
             psi = self.extractor.extract(path)[0].cpu().numpy()
+        if not np.all(np.isfinite(psi)):
+            raise ValueError("non-finite bilinear signature features during evaluation")
         
         # Use combined weights (includes SKVI if trained)
         w = self.w_combined
@@ -595,16 +608,33 @@ class CQKRONICMerton:
         c0 = w @ (self.koopman.A0 @ psi)
         c1 = w @ (self.koopman.A1 @ psi)
         c2 = w @ (self.koopman.A2 @ psi)
+        if not np.all(np.isfinite([c0, c1, c2])):
+            raise ValueError("non-finite bilinear quadratic coefficients during allocation search")
         
         if c2 >= 0:
             pi_grid = np.linspace(pi_min, pi_max, 200)
             objs = c0 + c1 * pi_grid + c2 * pi_grid**2
-            return pi_grid[np.argmax(objs)], c0, c1, c2
+            if not np.all(np.isfinite(objs)):
+                raise ValueError("non-finite bilinear objective grid during allocation search")
+            idx = int(np.argmax(objs))
+            pi_opt = float(pi_grid[idx])
+            concave = False
+        else:
+            pi_star = -c1 / (2 * c2)
+            pi_opt = float(np.clip(pi_star, pi_min, pi_max))
+            concave = True
         
-        pi_star = -c1 / (2 * c2)
-        pi_star = np.clip(pi_star, pi_min, pi_max)
-        
-        return float(pi_star), c0, c1, c2
+        return {
+            "pi_opt": pi_opt,
+            "c0": float(c0),
+            "c1": float(c1),
+            "c2": float(c2),
+            "concave": concave,
+        }
+
+    def find_optimal_pi(self, state_history, pi_min=0.01, pi_max=10.0):
+        diag = self.evaluate_state(state_history, pi_min=pi_min, pi_max=pi_max)
+        return diag["pi_opt"], diag["c0"], diag["c1"], diag["c2"]
 
 
 # =============================================================================
@@ -637,10 +667,9 @@ def run_cq_experiment(mode='transfer'):
 
 def run_hedging_comparison():
     """Compare Transfer vs Generator vs KKF hedging demand against theory."""
+    from merton_theory import canonical_state_history, stationary_heston_crra_theory
+
     V_test = 0.04
-    mu, r, gamma = 0.08, 0.02, 2.0
-    a = mu - r
-    kappa, theta, xi = 2.0, 0.04, 0.3
     
     print("=" * 75)
     print("HEDGING DEMAND: Transfer vs Generator vs KKF vs Analytical")
@@ -649,26 +678,17 @@ def run_hedging_comparison():
     print("  " + "-" * 50)
     
     for rho in [0.0, -0.3, -0.5, -0.7, -0.9]:
-        # Analytical hedging demand
-        kappa_eff = kappa - rho * xi * (1-gamma) * a / (gamma * theta)
-        gamma_coeff = -(1 - gamma) * a**2 / (2 * gamma**2 * theta**2)
-        disc = kappa_eff**2 - 4 * 0.5 * xi**2 * gamma_coeff
-        if disc >= 0:
-            B1 = (-(-kappa_eff) - np.sqrt(disc)) / (2 * 0.5 * xi**2)
-            B2 = (-(-kappa_eff) + np.sqrt(disc)) / (2 * 0.5 * xi**2)
-            B = B1 if abs(B1) < abs(B2) else B2
-            theory_hedge = rho * xi * (1-gamma) * B / gamma
-        else:
-            theory_hedge = float('nan')
-        
+        env = HestonMertonEnv(rho=rho)
+        theory_hedge = stationary_heston_crra_theory(env, V_test).hedging_demand
+        eval_history = canonical_state_history(V_test, env.merton_optimal(V_test))
+
         results = {}
         for mode in ['transfer', 'generator', 'kkf']:
             np.random.seed(42); torch.manual_seed(42)
-            env = HestonMertonEnv(rho=rho)
             cq = CQKRONICMerton(env, depth=3, mode=mode)
             pX, pY, pi, UY = cq.generate_training_data(n_paths=60, n_steps=100)
             cq.train(pX, pY, pi, UY)
-            pi_opt, _, _, _ = cq.find_optimal_pi([[0.0, V_test]] * 3)
+            pi_opt, _, _, _ = cq.find_optimal_pi(eval_history)
             results[mode] = pi_opt - env.merton_optimal(V_test)
         
         print(f"  {rho:+.1f}   {theory_hedge:+.4f}    {results['transfer']:+.4f}     {results['generator']:+.4f}     {results['kkf']:+.4f}")
