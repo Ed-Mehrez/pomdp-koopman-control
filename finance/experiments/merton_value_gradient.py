@@ -96,6 +96,15 @@ from src.sskf.leadlag_blr_kf import (
     LeadLagBLRKFConfig,
     LeadLagBLRKFilter,
 )
+from src.sskf.multiscale_leadlag_filters import (
+    CumulativeStrideLeadLagBLRKFConfig,
+    CumulativeStrideLeadLagBLRKFilter,
+    MultiScaleLeadLagBLRKFConfig,
+    MultiScaleLeadLagBLRKFilter,
+    fixed_calendar_ladder,
+    gammas_from_taus,
+    strides_from_taus,
+)
 
 
 # ==========================================================================
@@ -246,6 +255,121 @@ class LeadLagBLRKFVEstimator:
         self.traj_V_lo.append(lo)
         self.traj_V_hi.append(hi)
         self.traj_R_kf.append(self.filter.last_R_kf())
+
+    def V_hat(self) -> float:
+        return self.filter.V_hat()
+
+    def V_interval(self) -> Tuple[float, float]:
+        return self.filter.V_interval()
+
+
+class MultiScaleLeadLagBLRKFVEstimator:
+    r"""Multiresolution forgetting-factor lead-lag BLR+KF lane.
+
+    K parallel lead-lag log-signature states at different forgetting
+    factors gamma_k; per-scale 3-feature BLR on [Levy QV area, ret_lead,
+    bias]; the K BLR predictive Gaussians are precision-combined into one
+    scalar observation for an outer CIR Kalman on V.
+
+    The `taus_years` list specifies the K scales IN CALENDAR TIME (years);
+    gammas are derived as gamma_k = exp(-dt / tau_k).  Use
+    `fixed_calendar_ladder(dt, days=(...))` to construct a fixed ladder.
+    """
+    name = "ms_forget_leadlag"
+
+    def __init__(
+        self, env: HestonMertonEnv, dt: float,
+        taus_years: Optional[List[float]] = None,
+        target_clip: Optional[float] = 2.0,
+    ):
+        self.dt = float(dt)
+        if taus_years is None:
+            taus_years = fixed_calendar_ladder(dt, days=(1.0, 5.0, 20.0))
+        self.taus_years = list(taus_years)
+        gammas = gammas_from_taus(self.taus_years, dt)
+        cfg = MultiScaleLeadLagBLRKFConfig(
+            gammas=tuple(gammas),
+            kf_kappa=env.kappa, kf_theta=env.theta, kf_xi=env.xi,
+            V_floor=1e-6, P_init_mult=10.0,
+            prior_w_var=10.0, sigma_n2_init=0.01, sigma_n2_alpha=0.01,
+            target_clip=target_clip,
+        )
+        self.filter = MultiScaleLeadLagBLRKFilter(dt=dt, config=cfg)
+        self.traj_z: list = []
+        self.traj_V_lo: list = []
+        self.traj_V_hi: list = []
+        self.traj_R_fused: list = []
+
+    def reset(self, V0: float):
+        self.filter.reset(V0)
+        self.traj_z = []
+        self.traj_V_lo = []
+        self.traj_V_hi = []
+        self.traj_R_fused = []
+
+    def observe(self, r_t: float, dt: float):
+        self.filter.observe(r_t, dt)
+        self.traj_z.append(self.filter.last_z())
+        lo, hi = self.filter.V_interval()
+        self.traj_V_lo.append(lo)
+        self.traj_V_hi.append(hi)
+        self.traj_R_fused.append(self.filter.last_R_fused())
+
+    def V_hat(self) -> float:
+        return self.filter.V_hat()
+
+    def V_interval(self) -> Tuple[float, float]:
+        return self.filter.V_interval()
+
+
+class CumulativeStrideLeadLagBLRKFVEstimator:
+    r"""Multiresolution cumulative-stride lead-lag BLR+KF lane.
+
+    ONE cumulative (gamma=1.0) lead-lag log-sig state; per-stride window
+    log-sig is reconstructed exactly at level 2 via Chen's identity with
+    one bilinear correction.  K Bayesian regression heads operate on the
+    window-normalized phi = [2*Levy_QV/(m*dt), ret_lead/(m*dt), 1];
+    outputs precision-combined into outer CIR Kalman on V.
+
+    The `taus_years` list specifies the K strides IN CALENDAR TIME (years);
+    integer strides are derived as m_k = max(1, round(tau_k / dt)).
+    """
+    name = "cum_stride_leadlag"
+
+    def __init__(
+        self, env: HestonMertonEnv, dt: float,
+        taus_years: Optional[List[float]] = None,
+        target_clip: Optional[float] = 2.0,
+    ):
+        self.dt = float(dt)
+        if taus_years is None:
+            taus_years = fixed_calendar_ladder(dt, days=(1.0, 5.0, 20.0))
+        self.taus_years = list(taus_years)
+        strides = strides_from_taus(self.taus_years, dt, min_stride=1)
+        cfg = CumulativeStrideLeadLagBLRKFConfig(
+            strides=tuple(strides),
+            kf_kappa=env.kappa, kf_theta=env.theta, kf_xi=env.xi,
+            V_floor=1e-6, P_init_mult=10.0,
+            prior_w_var=10.0, sigma_n2_init=0.01, sigma_n2_alpha=0.01,
+            target_clip=target_clip,
+        )
+        self.filter = CumulativeStrideLeadLagBLRKFilter(dt=dt, config=cfg)
+        self.traj_z: list = []
+        self.traj_V_lo: list = []
+        self.traj_V_hi: list = []
+
+    def reset(self, V0: float):
+        self.filter.reset(V0)
+        self.traj_z = []
+        self.traj_V_lo = []
+        self.traj_V_hi = []
+
+    def observe(self, r_t: float, dt: float):
+        self.filter.observe(r_t, dt)
+        self.traj_z.append(self.filter.last_z())
+        lo, hi = self.filter.V_interval()
+        self.traj_V_lo.append(lo)
+        self.traj_V_hi.append(hi)
 
     def V_hat(self) -> float:
         return self.filter.V_hat()
