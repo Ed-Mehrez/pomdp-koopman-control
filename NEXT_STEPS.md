@@ -165,6 +165,9 @@ gradient gives the control correction: ∇h(sig)/h(sig).
       do NOT put them on the critical path of either track.
 
 ### Priority 1: Paper 1 — v1 science benchmark (double-well first)
+- [ ] Keep Brunton/Klus-facing POC work in `experiments/science_poc/` and
+      `docs/poc_brunton_klus_2026_05/`; finance remains a stress-test lane, not
+      the lead narrative.
 - [ ] Double-well potential POMDP: KGEDMD generator vs analytic
 - [ ] CdC identity verification on double-well
 - [ ] EDMD + LQR baseline (Korda & Mezić 2018) on double-well

@@ -24,8 +24,8 @@ that use domain knowledge (e.g., a linear-Gaussian Kalman filter for an
 OU factor) are constructed with explicit model parameters.
 
 Currently used by:
-    - experiments/envs/latent_ou_drift.py         (Approach 2 canonical env)
-    - experiments/latent_ou_representation_demo.py  (Approach 2 demo)
+    - experiments/science_poc/envs/latent_ou_drift.py  (Approach 2 env)
+    - experiments/science_poc/latent_ou_representation_demo.py
 
 Expect refactor when a third non-adapter caller appears.
 """

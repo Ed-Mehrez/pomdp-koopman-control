@@ -219,32 +219,48 @@ Do claim, if validated:
 
 ## Immediate Next Steps for New Chat
 
-Start in this repo:
+Start in the source repo:
 
 ```bash
-cd /home/ed/SynologyDrive/Documents/Research/PE_Research/thesis-synthesis
+cd /home/ed/SynologyDrive/Documents/Research/PE_Research/pomdp-koopman-control
+conda activate rkhs-kronic-gpu
 ```
 
-Then audit in this order:
+Use this internal split:
 
-1. `../fsde-identifiability`
+- `docs/poc_brunton_klus_2026_05/` for the Brunton/Klus narrative.
+- `experiments/science_poc/` for runnable science-first examples.
+- `finance/` only for the final stress test, not the lead motivation.
+
+Then work in this order:
+
+1. Current science POC seed
+   - Rerun `experiments/science_poc/latent_ou_representation_demo.py`.
+   - Rerun `experiments/science_poc/latent_ou_representation_demo_bayesian.py`.
+   - Use this as the warm-up figure, not the whole POC.
+
+2. First generator benchmark
+   - Implement two-scale Langevin / generalized Langevin double-well under
+     `experiments/science_poc/`.
+   - Report raw-state vs delay/signature/RKHS lift.
+   - Include generator residual, spectral/timescale stability, and a
+     downstream quantity such as committor or transition rate.
+
+3. `../fsde-identifiability`
    - Find runnable examples/tests.
    - Verify Hurst, diffusion, and drift estimation on held-out seeds.
    - Check whether reported drift error is in-sample or held-out.
 
-2. `../pomdp-koopman-control`
-   - Rerun the strongest filtering/hedging claims.
-   - Confirm whether `55%` variance reduction and `0.91x` BPF MSE survive
-     clean seed sweeps.
-
-3. `../rkhs_kronic`
+4. `../rkhs_kronic`
    - Reuse only the parts that support the new paper:
      RKHS/Nystrom generator machinery, residual diagnostics, and the negative
      CartPole result as a cautionary appendix if useful.
 
-4. Decide the first science benchmark to implement:
-   - preferred: two-scale Langevin / generalized Langevin double-well,
-   - fallback: Lorenz-96 partial observation or Duffing/HAVOK.
+5. Finance stress test
+   - Rerun the strongest filtering/hedging claims after the science figure is
+     coherent.
+   - Confirm whether `55%` variance reduction and `0.91x` BPF MSE survive
+     clean seed sweeps before using those numbers.
 
 ## Go / No-Go Criteria
 

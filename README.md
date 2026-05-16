@@ -49,9 +49,12 @@ Principled separation into two components:
 ## Quick Start
 
 ```bash
-# Setup
-conda env create -f environment.yml
-conda activate pomdp-koopman-control
+# Shared local environment
+conda activate rkhs-kronic-gpu
+
+# Run the Brunton/Klus science POC seed
+python experiments/science_poc/latent_ou_representation_demo.py
+python experiments/science_poc/latent_ou_representation_demo_bayesian.py
 
 # Run Heston hedging example
 python examples/proof_of_concept/poc_heston_hedging.py
@@ -61,8 +64,15 @@ python examples/proof_of_concept/poc_heston_hedging.py
 
 ```
 pomdp-koopman-control/
+├── docs/
+│   ├── poc_brunton_klus_2026_05/  # Science-first POC narrative
+│   └── slides/                    # Audience-specific decks
+├── experiments/
+│   └── science_poc/               # Brunton/Klus runnable science examples
+├── finance/                       # Finance stress tests and applications
 ├── src/
-│   └── sskf/
+│   ├── control/                   # Shared local control helpers
+│   └── sskf/                      # Signature/RKHS filtering helpers
 │       ├── streaming_sig_kkf.py     # Streaming signature Kalman filter
 │       └── online_path_features.py  # Online path feature computation
 ├── examples/
@@ -72,8 +82,7 @@ pomdp-koopman-control/
 │       ├── poc_heston_filtering.py           # Volatility filtering
 │       ├── experiment_sig_kkf_pomdp.py       # POMDP control
 │       └── signature_features.py             # Log-signature utilities
-└── docs/
-    └── (theory documentation)
+└── kronic_pomdp/                  # Older POMDP/control prototypes
 ```
 
 ## Theoretical Foundation

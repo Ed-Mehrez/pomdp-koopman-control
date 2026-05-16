@@ -49,7 +49,7 @@ No finance vocabulary appears in this module.
 
 Currently used by:
     - finance/experiments/merton_relative_overlay_bayesian.py  (Heston)
-    - experiments/latent_ou_representation_demo_bayesian.py    (latent-OU)
+    - experiments/science_poc/latent_ou_representation_demo_bayesian.py
 
 Refactor when a third non-adapter caller appears.
 """

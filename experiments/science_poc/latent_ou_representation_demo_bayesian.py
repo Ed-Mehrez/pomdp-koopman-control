@@ -44,7 +44,9 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, os.pardir))
+REPO_ROOT = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from src.control.state_transform import (
     EFMLevel1,
@@ -56,7 +58,7 @@ from src.control.bayesian_local_quadratic import (
     fit_bayesian_quadratic,
     summarize_posterior,
 )
-from experiments.envs.latent_ou_drift import (
+from experiments.science_poc.envs.latent_ou_drift import (
     LatentOUConfig,
     LatentOUEnv,
 )
