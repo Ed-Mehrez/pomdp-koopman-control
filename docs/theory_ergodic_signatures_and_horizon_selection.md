@@ -18,11 +18,15 @@ Together these provide a principled, model-free approach to:
 
 ### 1.1 Why Ergodicity Matters
 
-Our product-kernel Koopman control framework learns the growth-rate function:
+Historically, the repo studied a **global product-kernel Koopman control**
+framework that learns the growth-rate function:
 
 $$g(\pi, x) = a(x) + \pi \cdot b(x) + \pi^2 \cdot c(x)$$
 
-by regressing H-step utility outcomes $y_H = U(W_{t+H}/W_t)$ onto product features $\Psi(x_t) \otimes [1, \pi, \pi^2]$. This regression is well-posed only if the joint distribution $(x_t, \pi_t, y_{H,t})$ is (approximately) stationary. Otherwise:
+by regressing H-step utility outcomes $y_H = U(W_{t+H}/W_t)$ onto product
+features $\Psi(x_t) \otimes [1, \pi, \pi^2]$. This regression is well-posed
+only if the joint distribution $(x_t, \pi_t, y_{H,t})$ is (approximately)
+stationary. Otherwise:
 
 - The regression coefficients $\mathbf{w}$ are time-dependent
 - Train/test splits are confounded by distributional shift
@@ -50,6 +54,16 @@ We need a transform $\phi: \text{paths} \to \text{features}$ that is:
 - **Universal**: $\phi$ can approximate any continuous path-functional
 - **Tunable**: A single parameter controls the memory/stationarity tradeoff
 - **Computable**: O(1) per time step (for online deployment)
+
+The later parts of this note keep the transform theory, but they refine the
+controller recommendation.  The current view of the repo is:
+
+1. the **stationary transformed-state** story remains the right representation
+   layer;
+2. the earlier **global product-kernel controller** is no longer the preferred
+   control architecture for finance;
+3. the recommended kernel controller is now a **reference-conditioned local
+   residual kernel / GP head** acting on a stationary transformed state.
 
 ---
 
@@ -221,11 +235,13 @@ For the Heston model: $\rho \approx \kappa = 2.0$, so $H_{\max} \approx 1/2 = 0.
 
 ### 4.1 Motivation
 
-Given a product-kernel regression:
+Given a historical global product-kernel regression:
 
 $$y_H = g_H(\pi, X_0; \mathbf{w}) + \varepsilon_H$$
 
-where $y_H = U(W_{t+H}/W_t)$ and $g_H(\pi, x) = a_H(x) + \pi b_H(x) + \pi^2 c_H(x)$, the horizon $H$ controls a bias-variance tradeoff:
+where $y_H = U(W_{t+H}/W_t)$ and
+$g_H(\pi, x) = a_H(x) + \pi b_H(x) + \pi^2 c_H(x)$, the horizon $H$ controls a
+bias-variance tradeoff:
 
 - **H too small**: The label $y_H$ is dominated by single-step noise. SNR ∝ $\sqrt{H}$ for i.i.d. returns, so R² ∝ H for small H.
 - **H too large**: The state features $\Psi(X_0)$ are decorrelated from $y_H$ due to mixing. R² ∝ $e^{-2\rho H}$ for large H.
@@ -254,7 +270,8 @@ where $h(\cdot)$ denotes differential entropy. $\square$
 
 ### 4.3 The Bias-Variance Decomposition in H
 
-**Theorem 4.3** (Asymptotic R² Profile). Under the Heston model with CRRA utility and product-kernel features with spectral gap $\rho = \kappa$:
+**Theorem 4.3** (Asymptotic R² Profile). Under the Heston model with CRRA
+utility and stationary transformed features with spectral gap $\rho = \kappa$:
 
 $$R^2(H) \sim \begin{cases} \alpha \cdot H \cdot dt & \text{for } H \ll 1/(2\kappa) \\ \beta \cdot e^{-2\kappa H \cdot dt} & \text{for } H \gg 1/(2\kappa) \end{cases}$$
 
@@ -441,11 +458,14 @@ Given observations $Y_t$ from an unknown process:
 
 3. **Select $H$**: Using the selected $\lambda$, run MI-based horizon selection (Algorithm 4.4) over $H \in \{H^*/4, H^*/2, H^*, 2H^*\}$ where $H^* = 1/(4\lambda \cdot dt)$
 
-4. **Learn**: Product-kernel ridge regression on EFM features with selected $H$
+4. **Learn**: fit a low-dimensional predictive head on the EFM state at the
+   selected $H$
 
-5. **Extract policy**: $\pi^*(x) = -b(x)/(2c(x))$ from product kernel weights
+5. **Control**: for current applications, prefer a reference-conditioned local
+   residual controller rather than a global product-kernel policy fit
 
-6. **Validate**: Check $R^2 > 0.05$ (signal threshold) and concavity $c(x) < 0 > 90\%$ of domain
+6. **Validate**: check posterior support for improvement / concavity on the
+   chosen trust region, rather than only a global point estimate
 
 ### 6.2 Computational Complexity
 
@@ -758,3 +778,287 @@ That is why the current recommended program is:
 - use Approach I as the fast benchmark,
 - build reusable tooling around Approach II,
 - and treat Approach III as the later theoretical completion of the stack.
+
+---
+
+## Part VIII: Kernel Controller Review and Current Recommendation
+
+The repo now contains several distinct kernel-control patterns.  They should
+not be treated as interchangeable.
+
+### 8.1 Three Kernel Architectures in the Repo
+
+The implemented kernel routes are:
+
+1. **Global joint state-action kernel tensor**
+   - historical finance line;
+   - examples: `finance/experiments/merton_kronic_kernel_tensor.py`,
+     the older product-kernel discussion in this note, and earlier
+     `\Psi(x) \otimes [1,\pi,\pi^2]` regressions;
+   - main idea: fit a single global action-value surface over the raw action
+     coordinate.
+
+2. **Pure local kernel control from scratch**
+   - current option-market-making local controller line;
+   - example: `src/applications/option_mm/local_kernel_controller.py`;
+   - main idea: fit a one-step reward landscape directly on
+     `(z_t, u_t) \mapsto r_t` with no strong prior controller.
+
+3. **Reference-conditioned local residual kernel control**
+   - current most promising architecture for transfer to Heston and other
+     partially observed finance problems;
+   - clearest implemented template:
+     `src/applications/option_mm/hybrid_residual_controller.py`;
+   - main idea: choose a strong nominal controller $a_{\mathrm{ref}}(z)$,
+     define a low-dimensional local overlay $u$, and learn only the residual
+     improvement around that controller on a compact trust region.
+
+The first route is the most expressive globally, but it is also the most
+exposed to extrapolation and weak-signal failure.  The second route is the
+cleanest conceptually, but it is data-hungry because the kernel must discover
+both the baseline and the correction.  The third route inherits the useful
+part of the second route while avoiding the worst failure mode of the first.
+
+### Proposition 8.1 (Why the Global Joint Kernel Is the Wrong Default)
+
+Suppose the true action-value or continuation map has a decomposition
+
+$$
+Q(z,a) = Q_{\mathrm{dom}}(z,a) + R(z,a),
+$$
+
+where:
+
+1. $Q_{\mathrm{dom}}$ contains the dominant global geometry in the action
+   variable (for example, the myopic Merton curvature in Heston, or the BBG
+   quote geometry in OMM),
+2. $R$ is the residual correction of actual interest.
+
+If a kernel learner is asked to fit $Q$ directly over an unbounded or very
+wide raw action domain, then the learner must simultaneously recover both the
+dominant global curvature and the small residual correction.  This is strictly
+harder than learning $R$ on a compact local overlay domain.
+
+#### Proof
+
+Let $\mathcal A$ denote the raw action domain and suppose the controller is
+fit directly as a nonparametric map on $(z,a) \in \mathcal Z \times \mathcal
+A$.  Then any approximation guarantee must control the full function
+$Q_{\mathrm{dom}} + R$ on the relevant action region.  In finance problems of
+the type considered in this repo, $Q_{\mathrm{dom}}$ often contains the large
+global curvature that prevents pathological leverage or quoting behavior.  A
+global kernel fit therefore spends most of its capacity recovering geometry
+that is already known analytically or semi-analytically.
+
+Now instead write
+
+$$
+a = a_{\mathrm{ref}}(z) + \Delta a(z,u),
+\qquad
+u \in \mathcal U,
+$$
+
+with compact $\mathcal U$, and define the residual objective
+
+$$
+\Delta Q(z,u)
+:=
+Q\!\big(z, a_{\mathrm{ref}}(z) + \Delta a(z,u)\big)
+-
+Q\!\big(z, a_{\mathrm{ref}}(z)\big).
+$$
+
+Since $\mathcal U$ is compact, the learner is now only asked to approximate
+the residual map on a compact domain.  The dominant global curvature has been
+factored into the reference controller, so the kernel head no longer needs to
+reconstruct it from sparse data.  Therefore the residual problem is strictly
+better conditioned for the current applications. $\square$
+
+#### Remark 8.2
+
+This proposition is the practical lesson of the old Merton kernel-tensor line.
+The issue was not that kernels are inappropriate.  The issue was that the
+kernel was asked to represent the **entire raw action geometry**, including
+the part that should have been carried by the reference policy.
+
+### Definition 8.3 (Reference-Conditioned Residual Kernel Controller)
+
+Let $z_t$ denote a stationary or approximately stationary transformed state
+from Approach II.  Let $a_{\mathrm{ref}}(z_t)$ be a nominal controller.  Let
+$u \in \mathcal U \subset \mathbb R^q$ be a low-dimensional local coordinate,
+and let
+
+$$
+a_t(u) = a_{\mathrm{ref}}(z_t) + \Delta a(z_t, u).
+$$
+
+A **reference-conditioned residual kernel controller** models either
+
+$$
+R(z_t, u) := \mathbb E[\Delta Y_t(u) \mid z_t]
+$$
+
+for a paired local response label $\Delta Y_t(u)$, or the full posterior law
+of $\Delta Y_t(u)$, and then chooses $u$ on the trust region $\mathcal U$.
+
+The key modeling choice is that the kernel head acts on the residual
+coordinate $u$, not on the raw action itself.
+
+### Proposition 8.4 (Paired Residual Labels Preserve the Control Objective)
+
+Fix a transformed state $z$ and a common random input $\omega$.  Let
+$Y(z,u,\omega)$ denote the short-horizon objective under local overlay $u$, and
+define the paired residual label
+
+$$
+\Delta Y(z,u,\omega) := Y(z,u,\omega) - Y(z,0,\omega).
+$$
+
+Then:
+
+1. the population residual target equals the improvement over the reference,
+   i.e.
+
+   $$
+   \mathbb E[\Delta Y(z,u,\omega) \mid z]
+   =
+   \mathbb E[Y(z,u,\omega) \mid z]
+   -
+   \mathbb E[Y(z,0,\omega) \mid z];
+   $$
+
+2. the paired-label variance satisfies
+
+   $$
+   \operatorname{Var}(\Delta Y \mid z)
+   =
+   \operatorname{Var}(Y(z,u,\omega)\mid z)
+   +
+   \operatorname{Var}(Y(z,0,\omega)\mid z)
+   -
+   2\operatorname{Cov}(Y(z,u,\omega),Y(z,0,\omega)\mid z).
+   $$
+
+Hence common random numbers reduce residual-label variance whenever the two
+outcomes are positively correlated.
+
+#### Proof
+
+The mean identity follows immediately from linearity of conditional
+expectation.  The variance identity is the standard variance formula for a
+difference of two random variables.  If the same noise is used for both
+evaluations, the covariance term is typically positive in controlled diffusion
+and market-making settings, so the variance of the paired difference is
+smaller than the variance under independent rollout differences. $\square$
+
+#### Remark 8.5
+
+This is why the current Bayesian local-response work should keep common random
+numbers fixed across the local overlay grid.  The goal is to estimate the
+action-dependent correction, not to pay avoidable Monte Carlo noise.
+
+### Proposition 8.6 (KRR / GP Residual Heads Are the Right Bayesian Kernel Form)
+
+Let $f(z,u)$ denote the residual response map on the compact domain
+$\mathcal Z \times \mathcal U$.  Put a Gaussian-process prior
+
+$$
+f \sim \mathcal{GP}(0, k((z,u),(z',u')))
+$$
+
+and observe noisy labels
+
+$$
+\Delta Y_i = f(z_i,u_i) + \varepsilon_i,
+\qquad
+\varepsilon_i \sim \mathcal N(0,\sigma_n^2).
+$$
+
+Then:
+
+1. the posterior mean equals kernel ridge regression with ridge
+   $\lambda = \sigma_n^2$;
+2. the posterior variance supplies a principled abstention or risk-sensitive
+   action rule on the local grid;
+3. this is the correct Bayesian interpretation of the kernel residual head in
+   the repo.
+
+#### Proof
+
+This is the standard GP/KRR equivalence: the posterior mean under a zero-mean
+GP prior with kernel $k$ and homoskedastic Gaussian noise is
+
+$$
+\hat f(x)
+=
+k(x,X)\big(K(X,X)+\sigma_n^2 I\big)^{-1} y,
+$$
+
+which is exactly the kernel-ridge predictor with ridge $\lambda=\sigma_n^2$.
+The posterior variance is also explicit:
+
+$$
+\operatorname{Var}(f(x)\mid D)
+=
+k(x,x) - k(x,X)\big(K+\sigma_n^2 I\big)^{-1}k(X,x),
+$$
+
+so posterior probability of improvement, lower credible bounds, and abstention
+to the reference action are immediate. $\square$
+
+#### Remark 8.7
+
+This proposition matters for the repo’s current standards.  Kernel methods in
+the controller should be framed as **Bayesian residual models**, not just as
+point-estimate regressors with ad hoc regularization.
+
+### 8.2 Current Recommendation for the Repo
+
+For the current Heston and transformed-state lines, the most promising kernel
+architecture is:
+
+1. **Representation**: build a stationary transformed state $z_t$ using
+   Approach II machinery (EFM, recurrent signatures, Kalman-like filters, or
+   other stationary lifted states).
+2. **Reference controller**: choose a strong nominal controller
+   $a_{\mathrm{ref}}(z_t)$.
+   - Heston benchmark: myopic Merton action;
+   - OMM benchmark: BBG-style controller.
+3. **Low-dimensional overlay**: define a compact local coordinate $u$ around
+   the reference policy.
+4. **Residual label**: fit paired local residual improvement, not the raw
+   global objective.
+5. **Kernel head**: use GP/KRR on $(z_t,u)$, interpreted Bayesianly.
+6. **Decision rule**: choose the overlay by posterior improvement /
+   lower-credible-bound logic, with abstention to the reference action as a
+   first-class outcome.
+
+### Remark 8.8 (What This Means for Current Files)
+
+The codebase review supports the following interpretation:
+
+- `finance/experiments/merton_kronic_kernel_tensor.py`
+  is an important historical prototype, but it should no longer be treated as
+  the mainline kernel architecture for finance control.
+- `src/applications/option_mm/local_kernel_controller.py`
+  remains useful as a pure from-scratch benchmark and as a negative-control
+  reference for data hunger.
+- `src/applications/option_mm/hybrid_residual_controller.py`
+  is the clearest existing implementation pattern for the recommended route:
+  transformed state, strong prior controller, low-dimensional perturbation,
+  local kernel residual.
+
+### Remark 8.9 (Heston Instantiation)
+
+For Heston/CRRA, the recommendation becomes:
+
+$$
+\pi_t = \pi_{\mathrm{myopic}}(\hat V_t)\big(1 + u_t\big),
+$$
+
+with $\pi_{\mathrm{myopic}}(\hat V_t) = (\mu-r)/(\gamma \hat V_t)$,
+$u_t$ low-dimensional, and the kernel head learning the residual value or
+short-horizon improvement over the myopic policy on a compact overlay set.
+
+This is more faithful to the current theory stack than the earlier global raw
+action-kernel fit.

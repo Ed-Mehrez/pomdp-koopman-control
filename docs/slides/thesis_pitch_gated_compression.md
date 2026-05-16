@@ -104,14 +104,14 @@ The gate acts on a **summary-target pair**, not on representation alone. A stron
 |---|---|---|---|---|---|---|
 | 1 | Daily Heston, daily bars | Mostly doesn't; well-specified easy case | EWMA on dr_S²/dt | ms_cum_stride | Gate chooses EWMA. **Confirmed.** | <span class="tag-done">completed</span> |
 | 2 | Heston, 5-min bars | Stronger separation of timescales; multiscale vol; intraday pattern | EWMA / realized-variance EWMA | ms_cum_stride; multiscale lead-lag BLR | No flip. `ms_cum_stride` is competitive (`0.9705` vs `0.9668` corr), but warm-start says the residual gap is intrinsic. | <span class="tag-done">completed</span> |
-| 3 | Bates / jump-vol | Jumps contaminate 1-D variance proxies | winsorized or BV-style EWMA | multires cumulative-stride signature | Raw `r²/dt` flips gate to robust scalar; BV-target swap recovers ~58% of the raw→winsor gap. Residual gap likely needs jump-aware representation. | <span class="tag-done">completed</span> |
+| 3 | Bates / jump-vol | Jumps contaminate 1-D variance proxies | winsorized or BV-style EWMA | multires cumulative-stride signature | Raw `r²/dt` flips gate to robust scalar; BV-target swap recovers ~58% of the raw→winsor gap. Soft gate ≈ hard clip; corrected de-jump oracle adds only ~0.02 corr, while latent-target supervision adds ~0.06 to ~0.09. Residual is mainly target noise at this config. | <span class="tag-done">completed</span> |
 | 4 | Nonlinear-observation latent state | No linear/Gaussian sufficient statistic | Kalman or handcrafted proxy | signature compression | Gate should prefer signatures | <span class="tag-next">next</span> |
 | 5 | Irregular / missing samples | Fixed-clock smoother structurally awkward | Interpolation + EWMA, or event-time EWMA | signature path summary | Signatures more attractive | <span class="tag-later">planned</span> |
 | 6 | Multifactor / two-timescale latent | One scalar cannot summarize multiple factors | Scalar EWMA, low-order parametric filter | multiresolution signatures | Signature lane more likely to win | <span class="tag-later">later</span> |
 
 **The thesis is not that signatures dominate on every benchmark; it is that the gate identifies when simple summaries are enough and when richer model-free compression is warranted.**
 
-<span class="small">Key Bates refinement: the signature lane means architecture + target. Same `ms_cum_stride` state with a BV-style target lifts corr from `0.5226` to `0.6997`; `winsor_ewma` remains best at `0.8260`. Full benchmark details: `docs/benchmark_ladder_gated_compression.md`.</span>
+<span class="small">Key Bates refinement: the signature lane means architecture + target. Same `ms_cum_stride` state with a BV-style target lifts corr from `0.5226` to `0.6997`; a corrected de-jump oracle is only ~`+0.02` above the soft-gated target on jump windows, while latent-target supervision adds `+0.05` to `+0.09`. `winsor_ewma` remains best at current jump intensities. Full benchmark details: `docs/benchmark_ladder_gated_compression.md`.</span>
 
 ---
 

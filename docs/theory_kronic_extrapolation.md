@@ -114,3 +114,86 @@ $$ \mathbb{E}[\hat{\lambda}_{post}(\pi_{extrap})] \approx \hat{\lambda}_{prior}(
 Because the variance penalty is quadratic in $\pi$, a single realized finite step $\Delta t$ at an extreme leverage produces enough empirical squared-error to overwhelm the prior. The eigenvalue collapses to negative, and the LP optimizer strictly rejects $\pi*{extrap}$ for $t+1$. $\blacksquare$
 
 An online controller naturally bounds itself: any dangerous extrapolation immediately generates the massive data needed to correct the model locally. Over time, the controller organically and safely maps out the boundaries of the safely traversable envelope.
+
+## 5. Current Repo Conclusion: Kernel Residualization Beats Global Raw-Action Fits
+
+The practical conclusion of the later repo work is more specific than the two
+solutions above.
+
+### 5.1 What Is Rejected
+
+The rejected object is **not** “kernel control” in general.  The rejected
+object is the attempt to let a global raw-action RBF fit carry the entire
+action geometry:
+
+$$
+Q(z,\pi) \approx \sum_{k=1}^N \alpha_k\,k\big((z,\pi),(z_k,\pi_k)\big),
+$$
+
+when the true problem already has a strong dominant structure in $\pi$.
+
+In the Merton/Heston line that dominant structure is the myopic policy and its
+global risk curvature.  In OMM it is the benchmark quote geometry.  Asking the
+kernel to relearn those large global effects from sparse controlled data is
+what makes the old raw-action fit fragile.
+
+### 5.2 Residual Kernelization Around a Reference Policy
+
+Let $a_{\mathrm{ref}}(z)$ be a reference controller and let the executed action
+be parameterized by a compact local coordinate $u$:
+
+$$
+a(z,u) = a_{\mathrm{ref}}(z) + \Delta a(z,u),
+\qquad
+u \in \mathcal U \subset \mathbb R^q.
+$$
+
+Define the residual short-horizon objective
+
+$$
+\Delta Q(z,u)
+:=
+Q\!\big(z, a(z,u)\big) - Q\!\big(z, a_{\mathrm{ref}}(z)\big).
+$$
+
+Then the kernel head only needs to learn $\Delta Q$ on the compact overlay
+domain $\mathcal U$, while the reference controller carries the dominant
+global action geometry.
+
+### Proposition 5.1 (Residualization Removes the Extrapolation Burden)
+
+If $\mathcal U$ is compact and $\Delta Q$ is continuous on the relevant state
+set times $\mathcal U$, then the kernel learner is never asked to represent
+the global raw-action curvature outside the trust region.  The extrapolation
+problem of Section 3 is therefore converted into a local approximation problem
+on a compact domain.
+
+#### Proof
+
+The old failure mode arose because the raw action variable was optimized on a
+wide domain where the kernel basis had negligible support.  After
+residualization, optimization is performed only over $\mathcal U$.  Since
+$\mathcal U$ is compact, every action queried by the optimizer lies in the
+region for which the residual kernel head was designed.  The global unbounded
+curvature is not approximated by the kernel at all; it is carried by
+$a_{\mathrm{ref}}$.  Hence the old extrapolation pathology is removed at the
+architectural level. $\square$
+
+### 5.3 Recommended Kernel Route
+
+For the current repo, the best kernel route is therefore:
+
+1. construct a transformed or belief state $z_t$;
+2. choose a strong reference controller $a_{\mathrm{ref}}(z_t)$;
+3. define a low-dimensional local overlay $u$;
+4. fit a Bayesian GP/KRR residual head on $(z_t,u)$;
+5. choose actions by posterior improvement or abstention-to-reference.
+
+For Heston, the natural instantiation is
+
+$$
+\pi_t = \pi_{\mathrm{myopic}}(\hat V_t)\big(1+u_t\big),
+$$
+
+with $\pi_{\mathrm{myopic}}(\hat V_t) = (\mu-r)/(\gamma \hat V_t)$ and a
+compact overlay coordinate $u_t$.

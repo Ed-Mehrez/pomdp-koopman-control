@@ -39,6 +39,29 @@ Current recommended order:
 - and treat Approach III as the fully general controller theory to complete
   once the representation layer is stable.
 
+### 0.2 Current Kernel Recommendation
+
+After reviewing the kernel-control lines now in the repo, the recommended
+kernel architecture for current applications is:
+
+1. construct a transformed or belief state `z_t` using Approach II;
+2. choose a strong reference controller `a_ref(z_t)`;
+3. define a low-dimensional local overlay `u` around that controller;
+4. fit a **Bayesian GP/KRR residual head** on `(z_t, u)` for local
+   improvement over the reference policy;
+5. use posterior-aware abstention / improvement logic to decide whether to
+   move off the reference action.
+
+This means:
+
+- the old **global joint state-action kernel tensor** is no longer the
+  preferred mainline architecture for finance control;
+- **pure local kernel control from scratch** remains a useful benchmark, but
+  not the default route in weak-signal finance problems;
+- the most promising pattern is the **reference-conditioned local residual
+  kernel** already exemplified in the OMM hybrid-residual line and directly
+  compatible with a myopic-reference Heston controller.
+
 ## 1. Core thesis
 
 At the project level, the intended theory is:
@@ -367,6 +390,8 @@ That is the part that looks generalizable beyond OMM.
 #### What failed
 
 - Pure local kernel control from scratch was too data-hungry.
+- Global raw-action kernelization was too exposed to extrapolation and weak
+  action-signal regimes.
 - The `sigma_sq_inv -> fixed skew law` channel was negative under the tested
   Heston regimes.
 - Plain bilinear SVD on action-response channels was not enough: it found
@@ -501,8 +526,11 @@ flowchart TD
 These are no longer the live methodological story:
 
 - `sigma_sq_inv` estimation as the route to OMM gains
-- pure local-kernel control from scratch in this daily Heston regime
-- the earlier hybrid-residual pilot as a headline positive
+- pure local-kernel control from scratch as the default architecture in daily
+  Heston-like regimes
+- the earlier hybrid-residual pilot as a standalone headline positive, rather
+  than as evidence for the more specific reference-conditioned residual-kernel
+  architecture
 - generic “SDRE works everywhere” language
 - framework-first abstractions (`src/control/`, controller registries)
 
@@ -510,12 +538,18 @@ These are no longer the live methodological story:
 
 1. The repo now has a **credible BBG benchmark layer** for OMM.
 2. The strongest current methodological result is **low-rank action geometry**, not a final benchmark-beating headline.
-3. The promising framework idea is:
-   - learn a dynamics-relevant action overspace from data,
-   - compress it with respect to the control objective,
-   - solve locally in the reduced coordinates.
-4. That idea is much more likely to generalize than any specific OMM quote rule.
-5. The next OMM work should therefore focus on **anti-triviality and robustness checks**, not on expanding the method family prematurely.
+3. The most promising current kernel route is:
+   - transformed or belief state,
+   - strong reference controller,
+   - low-dimensional overlay,
+   - Bayesian residual kernel head,
+   - posterior-aware abstention when evidence is weak.
+4. The low-rank action-geometry story remains important, but it should now be
+   interpreted as a way to construct better overlay coordinates, not as a
+   reason to return to a global raw-action kernel tensor by default.
+5. The next OMM / Heston work should therefore focus on **robust residual
+   control around strong references**, not on expanding the unconstrained
+   global method family prematurely.
 
 ## 12. Pointers
 

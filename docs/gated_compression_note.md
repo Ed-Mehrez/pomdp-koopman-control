@@ -77,7 +77,7 @@ The dominant finding is **target recovery**:
 - Overall raw→winsor gap: `+0.3034`; BV-target signature lane closes `+0.1771`, or about **58%** of that gap.
 - The continuous-channel diagnostic from the two-channel lane tracks smoothed BV with corr `+0.819`, showing that the signature state already contains the robust continuous-variation information; the original raw `r^2/dt` supervision was the main bottleneck.
 
-The residual gap to `winsor_ewma` is real. The jump channel remains weak, which is consistent with the jump-aware theory notes: level-2 lead-lag geometry captures continuous variation, while jump-sensitive information naturally lives in higher-order / Marcus-style structure. So Bates is a **positive result for the gated-compression thesis**, but not yet a win for the current level-2 signature lane as a standalone champion.
+The residual gap to `winsor_ewma` is real. The corrected target-gating follow-up sharpens the diagnosis: a hard clip and a soft gate are essentially equivalent, the corrected de-jump oracle adds only about `+0.02` corr on jump windows at `lambda_j = 30, 60`, while **latent-target supervision** adds about `+0.05` to `+0.09` corr on the full sample. So, at the current Bates configuration, the dominant residual is **per-step target noise**, not a large jump-identification gap. This is still a **positive result for the gated-compression thesis**: the summary-target pair matters, and the current level-2 signature lane improves sharply once the target is corrected, even though `winsor_ewma` remains the best practical baseline.
 
 ---
 
@@ -127,7 +127,7 @@ Full spec lives in `docs/benchmark_ladder_gated_compression.md`. The ladder is d
 |---|---|---|---|
 | 1 | Daily Heston, daily bars | completed | Gate chooses EWMA. **Confirmed.** |
 | 2 | Heston, 5-min bars | completed | Signature lane becomes competitive but does not flip the gate. Warm-start says gap is intrinsic at this config. |
-| 3 | Bates / jump-vol | completed | Raw target flips gate to a robust scalar. BV-style target recovers most of the signature loss; residual gap points to jump-aware representation. |
+| 3 | Bates / jump-vol | completed | Raw target flips gate to a robust scalar. BV-style target recovers most of the signature loss; soft gate adds little over hard clipping; dominant residual at this config is target noise, not a large jump-identification gap. |
 | 4 | Nonlinear-observation latent | next | No linear/Gaussian sufficient statistic; signatures prefer. |
 | 5 | Irregular / missing samples | planned | Fixed-clock smoother awkward; signatures prefer. |
 | 6 | Multifactor / two-timescale | later | One scalar cannot summarize multiple factors. |

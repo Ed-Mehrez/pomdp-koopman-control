@@ -468,6 +468,102 @@ debugging discussion.  If the reference policy is state-dependent, then the
 local coordinate must be interpreted **at the current state**, not frozen once
 at the initial state unless the benchmark itself is additive.
 
+### Proposition 5.4 (Reference-Conditioned Kernel Residualization)
+
+Let $S_t$ be a lifted state, let $a_{\mathrm{ref}}(S_t)$ be a reference
+controller, and let the executed action be parameterized by a compact local
+coordinate $u \in \mathcal U \subset \mathbb R^q$ via
+
+$$
+a_t(u) = a_{\mathrm{ref}}(S_t) + \Delta a(S_t,u).
+$$
+
+Define the short-horizon residual value functional
+
+$$
+\Delta Q_h(S_t,u)
+:=
+\mathbb E\!\left[
+G_{t,t+h}\big(a_t(u)\big) - G_{t,t+h}\big(a_t(0)\big)
+\;\middle|\;
+S_t
+\right],
+$$
+
+where $G_{t,t+h}$ is any admissible short-horizon objective.
+
+Then:
+
+1. control extraction on $\mathcal U$ may be carried out entirely through the
+   residual map $\Delta Q_h$;
+2. a kernel model on $(S_t,u)$ is only required to approximate a function on
+   the compact domain $\mathcal S \times \mathcal U$;
+3. the dominant global action geometry is carried by
+   $a_{\mathrm{ref}}$, not by the kernel head.
+
+#### Proof
+
+For any $S_t$, maximizing $Q_h(S_t,a_t(u))$ over $u \in \mathcal U$ is
+equivalent to maximizing
+
+$$
+Q_h(S_t,a_t(0)) + \Delta Q_h(S_t,u)
+$$
+
+over the same set.  Since the first term does not depend on $u$, the
+argmax depends only on $\Delta Q_h(S_t,u)$.  Because $\mathcal U$ is compact,
+the kernel head is only asked to approximate the residual map on a compact
+domain.  Thus the known or benchmarked reference controller carries the large
+global geometry, while the kernel head supplies only the local correction.
+$\square$
+
+#### Remark 5.5
+
+This proposition is the practical kernelization of Approach III that best fits
+the current repo state.  It is preferable to a global raw action-kernel fit
+whenever a reasonable reference policy is available.
+
+### Proposition 5.6 (Bayesian Kernel Head for the Residual Map)
+
+Let the residual map of Proposition 5.4 be given a Gaussian-process prior
+
+$$
+\Delta Q_h \sim \mathcal{GP}(0, k((s,u),(s',u'))),
+$$
+
+and suppose the observed local response labels are Gaussian-noise perturbed:
+
+$$
+\Delta Y_i = \Delta Q_h(s_i,u_i) + \varepsilon_i,
+\qquad
+\varepsilon_i \sim \mathcal N(0,\sigma_n^2).
+$$
+
+Then the posterior mean equals kernel ridge regression with ridge
+$\lambda=\sigma_n^2$, while the posterior variance gives a principled
+abstention or risk-sensitive control rule.
+
+#### Proof
+
+This is the standard GP/KRR equivalence.  The posterior mean is
+
+$$
+\hat f(x)
+=
+k(x,X)\big(K(X,X)+\sigma_n^2 I\big)^{-1}y,
+$$
+
+which is the kernel-ridge predictor with ridge $\lambda=\sigma_n^2$.  The
+posterior variance is explicit and can be used to compute probability of
+improvement, credible lower bounds, or abstention-to-reference rules.
+$\square$
+
+#### Remark 5.7
+
+This is the right Bayesian interpretation of the kernel residual controller in
+this repo.  The kernel head should not be treated as a bare point-estimate
+approximator when the decision problem itself depends on uncertainty.
+
 ---
 
 ## 6. Relationship Between the Three Approaches
