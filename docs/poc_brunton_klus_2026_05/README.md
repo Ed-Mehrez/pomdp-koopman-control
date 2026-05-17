@@ -51,9 +51,22 @@ For the next few days, keep the package narrow:
 conda activate rkhs-kronic-gpu
 python experiments/science_poc/latent_ou_representation_demo.py
 python experiments/science_poc/latent_ou_representation_demo_bayesian.py
+python experiments/science_poc/two_scale_generator_poc.py
+python experiments/science_poc/two_scale_fair_benchmark.py
+python experiments/science_poc/memory_mkl_poc.py
 ```
 
 The latent-OU demo is a fast warm-up figure: hidden ergodic factor, non-ergodic
 observed level, exact Kalman reference, and no finance framing. It should not
 be the full POC by itself; use it to motivate the two-scale/double-well
 generator benchmark.
+
+The two-scale double-well script is the first Brunton/Klus-facing generator
+POC. It reuses the finance-origin GP/KRR residual model and the shared
+fading-memory state transform, but evaluates them on a scientific partially
+observed dynamical system with known generator drift.
+
+Latest captured output:
+- [two_scale_generator_result.md](two_scale_generator_result.md)
+- [two_scale_fair_benchmark_result.md](two_scale_fair_benchmark_result.md)
+- [memory_mkl_poc_result.md](memory_mkl_poc_result.md)

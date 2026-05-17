@@ -15,7 +15,14 @@ Current runnable checks:
 conda activate rkhs-kronic-gpu
 python experiments/science_poc/latent_ou_representation_demo.py
 python experiments/science_poc/latent_ou_representation_demo_bayesian.py
+python experiments/science_poc/two_scale_generator_poc.py
+python experiments/science_poc/two_scale_fair_benchmark.py
+python experiments/science_poc/memory_mkl_poc.py
 ```
+
+`memory_mkl_poc.py` is exploratory: it demonstrates a controlled
+multiple-memory-kernel case where the learned kernel sum beats each individual
+memory lift.
 
 ## Finance Experiments
 

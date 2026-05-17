@@ -55,6 +55,9 @@ conda activate rkhs-kronic-gpu
 # Run the Brunton/Klus science POC seed
 python experiments/science_poc/latent_ou_representation_demo.py
 python experiments/science_poc/latent_ou_representation_demo_bayesian.py
+python experiments/science_poc/two_scale_generator_poc.py
+python experiments/science_poc/two_scale_fair_benchmark.py
+python experiments/science_poc/memory_mkl_poc.py
 
 # Run Heston hedging example
 python examples/proof_of_concept/poc_heston_hedging.py
