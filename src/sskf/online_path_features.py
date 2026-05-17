@@ -471,8 +471,8 @@ class RandomProjectionNystrom:
 
         for i in range(n):
             if i > 0:
-                ll_path[2*i - 1, :d] = path[i-1]
-                ll_path[2*i - 1, d:] = path[i]
+                ll_path[2*i - 1, :d] = path[i]
+                ll_path[2*i - 1, d:] = path[i-1]
             ll_path[2*i, :d] = path[i]
             ll_path[2*i, d:] = path[i]
 

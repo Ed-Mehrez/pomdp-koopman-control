@@ -2,16 +2,21 @@ import numpy as np
 
 def compute_path_signature(path_history: np.ndarray, level: int = 2) -> np.ndarray:
     """
-    Computes the Level-1 and Level-2 Signature terms of a path.
-    Implementation is fully vectorized using NumPy (no esig dependency).
+    Computes signature terms of a path.
+    Level 2 is vectorized with NumPy; higher levels delegate to iisignature.
     
     Args:
         path_history: Shape (T, D) array where T is time and D is dimension.
-        level: Only degree=2 is fully implemented.
+        level: Signature truncation level.
     
     Returns:
         concatenated signature features (flat array).
     """
+    if level > 2:
+        import iisignature
+
+        return iisignature.sig(path_history, level)
+
     # 1. Increments: dX_t = X_{t+1} - X_t
     dX = np.diff(path_history, axis=0) # Shape (T-1, D)
     
@@ -35,8 +40,9 @@ def compute_path_signature(path_history: np.ndarray, level: int = 2) -> np.ndarr
     # Prepend zeros.
     path_integral = np.vstack([np.zeros(D), path_centered[:-1]])
     
-    # S2[i, j] = sum_t path_integral[t, i] * dX[t, j]
-    sig2_matrix = path_integral.T @ dX
+    # Exact piecewise-linear level 2:
+    # cross-segment terms plus same-segment 0.5 * dx_i * dx_j terms.
+    sig2_matrix = path_integral.T @ dX + 0.5 * (dX.T @ dX)
     
     sig2_flat = sig2_matrix.flatten()
     
@@ -56,6 +62,12 @@ def compute_log_signature(path: np.ndarray, level: int = 2) -> np.ndarray:
     Returns:
         log_sig: flattened vector
     """
+    if level > 2:
+        import iisignature
+
+        prep = iisignature.prepare(path.shape[1], level)
+        return iisignature.logsig(path, prep)
+
     # 1. Compute Standard Signature Matrix S_ij
     dX = np.diff(path, axis=0)
     sig1 = np.sum(dX, axis=0)
@@ -87,84 +99,9 @@ def compute_signature_level_3(path: np.ndarray) -> np.ndarray:
     Use this for high-fidelity tasks where Level 2 Log-Sig is insufficient.
     Dim = d + d^2 + d^3.
     """
-    dX = np.diff(path, axis=0) # (T-1, D)
-    T_steps, D = dX.shape
-    
-    # 1. Level 1 (increments)
-    sig1 = np.sum(dX, axis=0) # (D,)
-    
-    # 2. Level 2 (Iterated Integrals)
-    # S(2)_ij = integral dXi dXj
-    # Efficient: S(2) = (cumsum dX) . dX
-    path_centered = np.cumsum(dX, axis=0)
-    # Shift: integral up to t-1 * dX_t
-    aug_path = np.vstack([np.zeros(D), path_centered[:-1]])
-    sig2_mat = aug_path.T @ dX # (D, D)
-    sig2 = sig2_mat.flatten()
-    
-    # 3. Level 3
-    # S(3)_ijk = integral S(2)_ij dXk
-    # We need the running Level 2 signature at every step
-    # Running Sig2(t)_ij = sum_{s < t} X_s_i * dX_s_j ? No.
-    # Recursive: S(3)_ijk = sum_t RunningSig2(t)_ij * dX_t_k
-    
-    # Calculate Running Sig2
-    # running_sig2[t, i, j]
-    running_sig2 = np.zeros((T_steps, D, D))
-    current_sig2 = np.zeros((D, D))
-    # We need cumulative sum of (path_integral(t) outer dX(t))
-    
-    # Vectorized:
-    # term_t_ij = aug_path[t]_i * dX[t]_j
-    # running_sig2[t] = sum_{0 to t-1} term_s_ij ...
-    # Wait, the definition is integral of path_level_{k-1} against dX.
-    
-    # Let's do loop for clarity on Level 3
-    sig3 = np.zeros((D, D, D)) 
-    
-    # Construct running level 2 path
-    # P2[t] is the Level 2 signature of the path up to time t
-    # P2[t] = P2[t-1] + (P1[t-1] \otimes dX[t]) + 0.5 dX[t] \otimes dX[t] (Stratonovich)
-    # Using Itô/Riemann sum here for simplicity:
-    # S(t) = S(t-1) \otimes (1 + dX_t)
-    # S(t)^2 = S(t-1)^2 + S(t-1)^1 \otimes dX_t + dX \otimes dX / 2
-    
-    # Simplified Iterated Sum (Chen):
-    # S_ijk = sum_{t1 < t2 < t3} dX_t1_i dX_t2_j dX_t3_k
-    
-    # Efficient:
-    # CumSum1 = cumsum(dX)
-    # CumSum2 = cumsum(CumSum1 * dX) ... No, outer product.
-    
-    # Algo:
-    # 1. R1 = CumSum(dX) 
-    # 2. R2 = CumSum(R1[t-1] \otimes dX[t])
-    # 3. R3 = CumSum(R2[t-1] \otimes dX[t])
-    # Sig = R_terminal
-    
-    # Let's do this:
-    R1 = np.vstack([np.zeros(D), np.cumsum(dX, axis=0)]) # (T, D)
-    
-    # Term for L2: R1[t] \otimes dX[t]
-    # We need R1[0...T-1]
-    R1_lag = R1[:-1] # (T-1, D)
-    
-    # Compute increments of Level 2
-    # dSig2[t, i, j] = R1_lag[t, i] * dX[t, j]
-    dSig2 = np.einsum('ti,tj->tij', R1_lag, dX)
-    
-    # Integrate to get running Level 2
-    R2 = np.cumsum(dSig2, axis=0) # (T-1, D, D)
-    R2 = np.vstack([np.zeros((1, D, D)), R2]) # (T, D, D)
-    R2_lag = R2[:-1] # (T-1, D, D)
-    
-    # Term for L3: R2_lag[t] \otimes dX[t]
-    # dSig3[t, i, j, k] = R2_lag[t, i, j] * dX[t, k]
-    dSig3 = np.einsum('tij,tk->tijk', R2_lag, dX)
-    
-    sig3 = np.sum(dSig3, axis=0).flatten()
-    
-    return np.concatenate([sig1, sig2, sig3])
+    import iisignature
+
+    return iisignature.sig(path, 3)
 
 def get_augmented_state_with_signatures(env_obs, history_buffer, use_log_signatures=False):
     """
@@ -233,7 +170,8 @@ def compute_lead_lag_path(path_1d: np.ndarray) -> np.ndarray:
     
     This embedding is CRITICAL for capturing Quadratic Variation (Volatility)
     using Signatures, as standard 1D signatures only capture increments (Chen's Identity).
-    The 'Area' between Lead and Lag corresponds to sum of squares.
+    The Lévy area between Lead and Lag is one half of quadratic variation:
+    2 * Area(lead, lag) = sum of squared increments.
     """
     # Simply interleave points
     # Generic construction for path X = (x1, x2, x3...)
@@ -244,8 +182,8 @@ def compute_lead_lag_path(path_1d: np.ndarray) -> np.ndarray:
     n = len(x)
     
     # We construct 2 * n - 1 points
-    lead = np.repeat(x, 2)[:-1] # x1, x1, x2, x2, x3...
-    lag  = np.repeat(x, 2)[1:]  # x1, x2, x2, x3, x3...
+    lead = np.repeat(x, 2)[1:]  # x1, x2, x2, x3, x3...
+    lag  = np.repeat(x, 2)[:-1] # x1, x1, x2, x2, x3...
     
     return np.column_stack([lead, lag])
 
@@ -269,7 +207,7 @@ class RecurrentLeadLagLogSigMap:
       2. (0, dx) — lag catches up to lead
 
     The Levy area between lead_i and lag_i captures quadratic variation
-    of channel i: Area(lead_i, lag_i) = sum of dx_i^2.
+    of channel i: 2 * Area(lead_i, lag_i) = sum of dx_i^2.
 
     At level 2 for input dim d:
       - Lead-lag dim: 2d
@@ -320,7 +258,7 @@ class RecurrentLeadLagLogSigMap:
         Step 1: lead moves by dx, lag stays: dx_ll = (dx[0], dx[1], ..., 0, 0, ...)
         Step 2: lag catches up:              dx_ll = (0, 0, ..., dx[0], dx[1], ...)
 
-        The Levy area between lead_i and lag_i accumulates dx_i^2.
+        The Levy area between lead_i and lag_i accumulates 0.5 * dx_i^2.
         """
         # Step 1: lead moves
         dx_lead = np.zeros(self.d)
