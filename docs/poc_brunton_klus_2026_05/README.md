@@ -54,6 +54,7 @@ python experiments/science_poc/latent_ou_representation_demo_bayesian.py
 python experiments/science_poc/two_scale_generator_poc.py
 python experiments/science_poc/two_scale_fair_benchmark.py
 python experiments/science_poc/memory_mkl_poc.py
+python experiments/science_poc/l96_closure_mkl.py
 ```
 
 The latent-OU demo is a fast warm-up figure: hidden ergodic factor, non-ergodic
@@ -70,3 +71,7 @@ Latest captured output:
 - [two_scale_generator_result.md](two_scale_generator_result.md)
 - [two_scale_fair_benchmark_result.md](two_scale_fair_benchmark_result.md)
 - [memory_mkl_poc_result.md](memory_mkl_poc_result.md)
+- [l96_closure_mkl_result.md](l96_closure_mkl_result.md) -- first natural-benchmark
+  test of the MKL closure story. Honest mixed result: MKL works as a diagnostic
+  but a single-memory-mechanism system like L96 is not where mixture wins are
+  expected. Next benchmarks should have multiple distinct memory mechanisms.

@@ -58,6 +58,7 @@ python experiments/science_poc/latent_ou_representation_demo_bayesian.py
 python experiments/science_poc/two_scale_generator_poc.py
 python experiments/science_poc/two_scale_fair_benchmark.py
 python experiments/science_poc/memory_mkl_poc.py
+python experiments/science_poc/l96_closure_mkl.py
 
 # Run Heston hedging example
 python examples/proof_of_concept/poc_heston_hedging.py
